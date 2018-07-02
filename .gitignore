@@ -3,3 +3,4 @@ data/*
 !data/.keep
 cache/*
 scratchpad/*
+notes/*.pdf
