@@ -13,7 +13,7 @@ from st_gumbel import gumbel_softmax
 def categorical_kld(p, q):
     return torch.sum(torch.sum(torch.mul(p, torch.log(p/q)), 1))
 
-def gaussian_loglikelihood(mus, sigmas, preds):
+def loglikelihood(mus, sigmas, preds):
     return torch.sum(-0.5 * torch.log(2 * np.pi * sigmas**2) - (1/(2*(sigmas**2)))*(mus-preds)**2 , 2)
 
 def flip(x, dim):
@@ -24,7 +24,7 @@ def flip(x, dim):
 
 class Model(nn.Module):
     def __init__(self, n_layers, n_dims, bottlenecks, n_regimes,
-                dilations, kernel_size):
+                 dilations, kernel_size, window):
         super(Model, self).__init__()
 
         self.n_layers = n_layers
@@ -33,6 +33,7 @@ class Model(nn.Module):
         self.dilations = dilations
         self.kernel_size = kernel_size
         self.n_regimes = n_regimes
+        self.window = window
 
         assert n_layers == len(dilations)
         assert n_layers == len(bottlenecks)
@@ -91,33 +92,35 @@ class Model(nn.Module):
         )
         self.inference_convs = nn.ModuleList(self.inference_convs)
 
-        self.final_infer_conv1 = nn.Conv1d(
-            n_regimes*2,
-            n_regimes*2,
-            1,
-        )
-        self.final_infer_conv2 = nn.Conv1d(
-            n_regimes*2,
-            n_regimes,
-            1,
-        )
+        self.final_infer_convs = [
+            nn.Conv1d(n_regimes*2, n_regimes*2, 1).cuda(),
+            nn.Conv1d(n_regimes*2, n_regimes*2, 1).cuda(),
+            nn.Conv1d(n_regimes*2, n_regimes, 1).cuda(),
+        ]
+        self.final_infer_convs = nn.ModuleList(self.final_infer_convs)
 
-        self.params_conv1 = nn.Conv1d(
-            n_regimes*2,
-            n_regimes*2,
-            1
-        )
-        self.params_conv2 = nn.Conv1d(
-            n_regimes*2,
-            2 * n_dims,
-            1
-        )
+        self.params_convs = [
+            nn.Conv1d(n_regimes*2, n_regimes*2, 1).cuda(),
+            nn.Conv1d(n_regimes*2, n_regimes*2, 1).cuda(),
+            nn.Conv1d(n_regimes*2, n_dims, 1).cuda(),
+        ]
+        self.params_convs = nn.ModuleList(self.params_convs)
+
+        self.sqrt_cov_tt = nn.Parameter(torch.stack([
+            torch.rand(1).cuda()\
+            for _ in range(n_regimes)
+        ]))
+        self.fish_jt = nn.Parameter(torch.stack([
+            torch.zeros(window).cuda()\
+            for _ in range(n_regimes)
+        ]))
+
 
     def inference_pass(self, y):
         y = F.pad(y, (sum(self.dilations), 0, 0, 0))
         for conv in self.inference_convs:
             y = conv(y)
-            y = F.tanh(y)
+            y = F.rrelu(y)
         y = flip(y,2)
         return y
 
@@ -125,8 +128,9 @@ class Model(nn.Module):
         x = F.pad(x, (sum(self.dilations), 0, 0, 0))
         for conv in self.convs:
             x = conv(x)
-            x = F.tanh(x)
+            x = F.rrelu(x)
         return x
+
 
     def infer(self, y):
         h_vecs = self.forward_pass(y[:,:,:-1])
@@ -134,75 +138,95 @@ class Model(nn.Module):
         b_vecs = self.inference_pass(y[:,:,1:])
 
         h_inf = torch.cat((h_vecs, b_vecs), 1)
-        h_inf = self.final_infer_conv1(h_inf)
-        h_inf = F.relu(h_inf)
-        h_inf = self.final_infer_conv2(h_inf)
-        h_inf = F.relu(h_inf)
-
+        for conv in self.final_infer_convs:
+            h_inf = conv(h_inf)
+            h_inf = F.rrelu(h_inf)
 
         q = F.softmax(h_inf, 1)
-#        q = q + 0.00001
-#        q = F.softmax(q, 1)
+
         return q
 
     def gen(self, x):
         h_vecs = self.forward_pass(x)
-        p = F.softmax(h_vecs, 1)
-        gen_z = gumbel_softmax(h_vecs.permute(0,2,1).cuda(), 0.1).permute(0,2,1)
-        gaussian_params = self.params_conv1(torch.cat((gen_z, h_vecs), 1))
-        gaussian_params = F.relu(gaussian_params)
-        gaussian_params = self.params_conv2(gaussian_params)
-        mus, sigmas = torch.chunk(gaussian_params, 2, 1)
 
-        mus = F.sigmoid(mus)
-        sigmas = F.tanh(sigmas)
+        gen_z = gumbel_softmax(h_vecs.permute(0,2,1), 0.1).permute(0,2,1)
+        mus = self.params_convs[0](torch.cat((gen_z, h_vecs), 1))
+        for conv in self.params_convs[1:]:
+            mus = F.rrelu(mus)
+            mus = conv(mus)
 
-        mu = mus[:,:,-1]
-        sigma = sigmas[:,:,-1]
-        print(sigma)
+        window = self.window
 
-        normals = dist.Normal(mu, sigma)
+        cov_tt = (torch.einsum('ijk,jl->ilk', [gen_z, self.sqrt_cov_tt])**2)[:,:,window:gen_z.shape[-1]]
+        fish_jt = torch.einsum('ijk,jl->ilk', [gen_z, self.fish_jt])[:,:,window:gen_z.shape[-1]]
 
-        return normals.sample()
+        x_window = []
+        mus_window = []
+
+        for i in range(window, x.shape[-1]):
+            x_window.append(x[:,:,i-window:i].squeeze(1))
+            mus_window.append(mus[:,:,i-window:i].squeeze(1))
+
+        x_window = torch.stack(x_window, 2)
+        mus_window = torch.stack(mus_window, 2)
+
+        _mus = mus[:,:,window:gen_z.shape[-1]].squeeze(1) - torch.einsum(
+            'ijt,ijt->it', [(cov_tt)*(fish_jt), (x_window - mus_window)]
+        )
 
 
+        #mu = _mus[:,-1]
+
+#        normals = dist.Normal(mu, cov_tt)
+#        return normals.sample(), mu, gen_z
+
+        return _mus, gen_z
 
     def compute_loss(self, inputs, temp):
         x, y = inputs
 
         b_vecs = self.inference_pass(y)
-
         h_vecs = self.forward_pass(x)
-        p = F.softmax(h_vecs, 1)
-#        p = p + 0.00001
-#        p = F.softmax(p, 1)
-
-#        gen_z = gumbel_softmax(h_vecs.permute(0,2,1).cuda(), temp).permute(0,2,1)
 
         h_inf = torch.cat((h_vecs, b_vecs), 1)
-        h_inf = self.final_infer_conv1(h_inf)
-        h_inf = F.relu(h_inf)
-        h_inf = self.final_infer_conv2(h_inf)
+        for conv in self.final_infer_convs:
+            h_inf = conv(h_inf)
+            h_inf = F.rrelu(h_inf)
 
-        h_inf = F.relu(h_inf)
-
+        p = F.softmax(h_vecs, 1)
         q = F.softmax(h_inf, 1)
-#        q = q + 0.00001
-#        q = F.softmax(q, 1)
 
-        post_z = gumbel_softmax(q.permute(0,2,1).cuda(), temp).permute(0,2,1)
+        post_z = gumbel_softmax(h_inf.permute(0,2,1), temp).permute(0,2,1)
+        mus = self.params_convs[0](torch.cat((post_z, h_vecs), 1))
+        for conv in self.params_convs[1:]:
+            mus = F.rrelu(mus)
+            mus = conv(mus)
 
-        gaussian_params = self.params_conv1(torch.cat((post_z, h_vecs), 1))
-        gaussian_params = F.relu(gaussian_params)
-        gaussian_params = self.params_conv2(gaussian_params)
+        window = self.window
 
-        mus, sigmas = torch.chunk(gaussian_params, 2, 1)
+        cov_tt = (torch.einsum('ijk,jl->ilk', [post_z, self.sqrt_cov_tt])**2)[:,:,window:post_z.shape[-1]]
+        fish_jt = torch.einsum('ijk,jl->ilk', [post_z, self.fish_jt])[:,:,window:post_z.shape[-1]]
+        #cov_tt = (torch.einsum('ijk,jl->ilk', [F.softmax(h_inf), self.sqrt_cov_tt])**2)[:,:,window:post_z.shape[-1]]
+        #fish_jt = torch.einsum('ijk,jl->ilk', [F.softmax(h_inf), self.fish_jt])[:,:,window:post_z.shape[-1]]
 
-        mus = F.sigmoid(mus)
-        sigmas = F.tanh(sigmas)
 
-#        return p, q, mus, sigmas
 
-        logl = gaussian_loglikelihood(mus, sigmas, y)
-        return torch.mean(logl), - categorical_kld(q, p), q, p,  post_z
+        y_window = []
+        mus_window = []
 
+        for i in range(window, y.shape[-1]):
+            y_window.append(y[:,:,i-window:i].squeeze(1))
+            mus_window.append(mus[:,:,i-window:i].squeeze(1))
+
+        y_window = torch.stack(y_window, 2)
+        mus_window = torch.stack(mus_window, 2)
+
+        _mus = mus[:,:,window:post_z.shape[-1]].squeeze(1) - torch.einsum(
+            'ijt,ijt->it', [(cov_tt)*(fish_jt), (y_window - mus_window)]
+        )
+
+        logl = loglikelihood(_mus, cov_tt, y[:,:,window:post_z.shape[-1]])
+
+        return torch.mean(logl), -categorical_kld(q, p), torch.mean(
+                                        F.cosine_similarity(q, 
+                                            torch.ones(post_z.shape).cuda(), dim=1))
