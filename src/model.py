@@ -99,20 +99,16 @@ class Model(nn.Module):
         )
         self.inference_convs = nn.ModuleList(self.inference_convs)
 
-        self.final_infer_convs = [
-            nn.Conv1d(n_regimes, max(bottlenecks), 1).cuda(),
-            nn.Conv1d(max(bottlenecks), max(bottlenecks), 1).cuda(),
-            nn.Conv1d(max(bottlenecks), n_regimes, 1).cuda(),
-        ]
-        self.final_infer_convs = nn.ModuleList(self.final_infer_convs)
+        self.final_infer_conv = nn.Conv1d(n_regimes, n_regimes, 1).cuda()
 
-        self.params_convs = [
-            #nn.Conv1d(n_regimes*2, max(bottlenecks), 1).cuda(),
-            nn.Conv1d(1, max(bottlenecks), 1).cuda(),
-            nn.Conv1d(max(bottlenecks), max(bottlenecks), 1).cuda(),
-            nn.Conv1d(max(bottlenecks), n_dims, 1).cuda(),
-        ]
-        self.params_convs = nn.ModuleList(self.params_convs)
+        self.params_conv_weights = nn.Parameter(torch.stack([
+            torch.rand(n_dims, bottlenecks[-1]).cuda()\
+            for _ in range(n_regimes)
+        ]))
+        self.params_conv_bias = nn.Parameter(torch.stack([
+            torch.rand(n_dims).cuda()\
+            for _ in range(n_regimes)
+        ]))
 
         self.sqrt_cov_tt = nn.Parameter(torch.stack([
             torch.rand(1).cuda()\
@@ -135,41 +131,40 @@ class Model(nn.Module):
 
     def forward_pass(self, x):
         x = F.pad(x, (sum(self.dilations), 0, 0, 0))
-        for conv in self.convs:
+        for conv in self.convs[:-1]:
             x = conv(x)
             x = F.rrelu(x)
-        return x
+
+        return F.rrelu(self.convs[-1](x)), x
 
 
     def infer(self, y):
-        h_vecs = self.forward_pass(y[:,:,:-1])
+        h_vecs, _ = self.forward_pass(y[:,:,:-1])
+        h_vecs = h_vecs**2 + 10e-4
 
         b_vecs = self.inference_pass(y[:,:,1:])
 
         #h_inf = torch.cat((h_vecs, b_vecs), 1)
         h_inf = h_vecs+b_vecs
-        for conv in self.final_infer_convs:
-            h_inf = conv(h_inf)
-            h_inf = F.rrelu(h_inf)
+        h_inf = self.final_infer_conv(h_inf)
+        h_inf = F.rrelu(h_inf)
         h_inf = h_inf**2 + 10e-4
         q = h_inf.div(torch.sum(h_inf, dim=1).unsqueeze(1))
 
         return q
 
     def gen(self, x):
-        h_vecs = self.forward_pass(x)
-        h_vecs = F.relu(h_vecs) + 10e-4
+        h_vecs, pre_h_vecs = self.forward_pass(x)
+        pre_h_vecs = pre_h_vecs[:,:,self.dilations[-1]:]
+        h_vecs = h_vecs**2 + 10e-4
 
         p = h_vecs.div(torch.sum(h_vecs, dim=1).unsqueeze(1))
         gen_z = gumbel_softmax(torch.log(p).permute(0,2,1), 0.1).permute(0,2,1)
-        mus = torch.einsum("ijlt,ijkt->ikt", [gen_z.unsqueeze(2), torch.stack(
-            torch.chunk(h_vecs, self.n_regimes, dim=1), dim=1)]
-        )
 
-        mus = self.params_convs[0](mus)
-        for conv in self.params_convs[1:]:
-            mus = F.rrelu(mus)
-            mus = conv(mus)
+        weight = torch.einsum('ijk,jel->ielk',[gen_z, self.params_conv_weights])
+        bias = torch.einsum('ijk,jl->ilk',[gen_z, self.params_conv_bias])
+
+        mus = torch.einsum('idjt,ikjt->idt', [weight, pre_h_vecs.unsqueeze(1)]) + bias
 
         window = self.window
 
@@ -202,37 +197,28 @@ class Model(nn.Module):
         x, y = inputs
 
         b_vecs = self.inference_pass(y)
-        h_vecs = self.forward_pass(x)
+        h_vecs, pre_h_vecs = self.forward_pass(x)
+        pre_h_vecs = pre_h_vecs[:,:,self.dilations[-1]:]
         h_vecs = h_vecs**2 + 10e-4
 
         #h_inf = torch.cat((h_vecs, b_vecs), 1)
         h_inf = h_vecs+b_vecs
-
-        for conv in self.final_infer_convs:
-            h_inf = conv(h_inf)
-            h_inf = F.rrelu(h_inf)
+        h_inf = self.final_infer_conv(h_inf)
+        h_inf = F.rrelu(h_inf)
         h_inf = h_inf**2 + 10e-4
 
         p = h_vecs.div(torch.sum(h_vecs, dim=1).unsqueeze(1))
-        #p_logits = torch.log(p) - torch.log(1-p)
 
         q = h_inf.div(torch.sum(h_inf, dim=1).unsqueeze(1))
-        #q_logits = torch.log(q) - torch.log(1-q)
 
         post_z = gumbel_softmax_sample(torch.log(q).permute(0,2,1), temp).permute(0,2,1)
+        #post_z = gumbel_softmax(torch.log(q).permute(0,2,1), temp).permute(0,2,1)
 
-        #mus = torch.einsum("ijlt,ijkt->ikt", [post_z.unsqueeze(2), torch.stack(
-            #torch.chunk(h_vecs, self.n_regimes, dim=1), dim=1)]
-        #)
+        weight = torch.einsum('ijk,jel->ielk',[post_z, self.params_conv_weights])
+        bias = torch.einsum('ijk,jl->ilk',[post_z, self.params_conv_bias])
 
-
-        #mus = self.params_convs[0](mus)
-
-        mus = self.params_convs[0](torch.cat((post_z, h_vecs), 1))
-
-        for conv in self.params_convs[1:]:
-            mus = F.rrelu(mus)
-            mus = conv(mus)
+        mus = torch.einsum('idjt,ikjt->idt', [weight, pre_h_vecs.unsqueeze(1)]) + bias
+        mus = F.rrelu(mus)
 
         window = self.window
 
