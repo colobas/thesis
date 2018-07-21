@@ -110,7 +110,7 @@ class Model(nn.Module):
             for _ in range(n_regimes)
         ]))
 
-        self.sqrt_cov_tt = nn.Parameter(torch.stack([
+        self.pre_cov_tt = nn.Parameter(torch.stack([
             torch.rand(1).cuda()\
             for _ in range(n_regimes)
         ]))
@@ -146,6 +146,7 @@ class Model(nn.Module):
 
         #h_inf = torch.cat((h_vecs, b_vecs), 1)
         h_inf = h_vecs+b_vecs
+        #h_inf = b_vecs
         h_inf = self.final_infer_conv(h_inf)
         h_inf = F.rrelu(h_inf)
         h_inf = h_inf**2 + 10e-4
@@ -156,9 +157,8 @@ class Model(nn.Module):
     def gen(self, x):
         h_vecs, pre_h_vecs = self.forward_pass(x)
         pre_h_vecs = pre_h_vecs[:,:,self.dilations[-1]:]
-        h_vecs = h_vecs**2 + 10e-4
 
-        p = h_vecs.div(torch.sum(h_vecs, dim=1).unsqueeze(1))
+        p = F.softmax(h_vecs/self.hidden_temp, 1)
         gen_z = gumbel_softmax(torch.log(p).permute(0,2,1), 0.1).permute(0,2,1)
 
         weight = torch.einsum('ijk,jel->ielk',[gen_z, self.params_conv_weights])
@@ -168,7 +168,10 @@ class Model(nn.Module):
 
         window = self.window
 
-        cov_tt = (torch.einsum('ijk,jl->ilk', [gen_z, self.sqrt_cov_tt])**2)[:,:,window:gen_z.shape[-1]]
+        cov_tt = (F.relu(
+            torch.einsum('ijk,jl->ilk', [gen_z, self.pre_cov_tt])
+        ).clamp(min=10e-4, max=1))[:,:,window:gen_z.shape[-1]]
+
         fish_jt = torch.einsum('ijk,jl->ilk', [gen_z, self.fish_jt])[:,:,window:gen_z.shape[-1]]
 
         x_window = []
@@ -191,7 +194,7 @@ class Model(nn.Module):
 #        normals = dist.Normal(mu, cov_tt)
 #        return normals.sample(), mu, gen_z
 
-        return _mus, mus, gen_z
+        return _mus, mus, gen_z, fish_jt, cov_tt, p
 
     def compute_loss(self, inputs, temp):
         x, y = inputs
@@ -199,20 +202,17 @@ class Model(nn.Module):
         b_vecs = self.inference_pass(y)
         h_vecs, pre_h_vecs = self.forward_pass(x)
         pre_h_vecs = pre_h_vecs[:,:,self.dilations[-1]:]
-        h_vecs = h_vecs**2 + 10e-4
+        p = F.softmax(h_vecs/self.hidden_temp, 1)
 
         #h_inf = torch.cat((h_vecs, b_vecs), 1)
         h_inf = h_vecs+b_vecs
+        #h_inf = b_vecs
         h_inf = self.final_infer_conv(h_inf)
         h_inf = F.rrelu(h_inf)
-        h_inf = h_inf**2 + 10e-4
+        q = F.softmax(h_inf/self.hidden_temp, 1)
 
-        p = h_vecs.div(torch.sum(h_vecs, dim=1).unsqueeze(1))
-
-        q = h_inf.div(torch.sum(h_inf, dim=1).unsqueeze(1))
-
-        post_z = gumbel_softmax_sample(torch.log(q).permute(0,2,1), temp).permute(0,2,1)
-        #post_z = gumbel_softmax(torch.log(q).permute(0,2,1), temp).permute(0,2,1)
+        #post_z = gumbel_softmax_sample(torch.log(q).permute(0,2,1), temp).permute(0,2,1)
+        post_z = gumbel_softmax(torch.log(q).permute(0,2,1), temp).permute(0,2,1)
 
         weight = torch.einsum('ijk,jel->ielk',[post_z, self.params_conv_weights])
         bias = torch.einsum('ijk,jl->ilk',[post_z, self.params_conv_bias])
@@ -222,9 +222,12 @@ class Model(nn.Module):
 
         window = self.window
 
-        cov_tt = (torch.einsum('ijk,jl->ilk', [post_z, self.sqrt_cov_tt])**2)[:,:,window:post_z.shape[-1]]
+        cov_tt = (F.relu(
+            torch.einsum('ijk,jl->ilk', [post_z, self.pre_cov_tt])
+        ).clamp(min=10e-4, max=1))[:,:,window:post_z.shape[-1]]
+
         fish_jt = torch.einsum('ijk,jl->ilk', [post_z, self.fish_jt])[:,:,window:post_z.shape[-1]]
-        #cov_tt = (torch.einsum('ijk,jl->ilk', [q, self.sqrt_cov_tt])**2)[:,:,window:post_z.shape[-1]]
+        #cov_tt = (torch.einsum('ijk,jl->ilk', [q, self.pre_cov_tt])**2)[:,:,window:post_z.shape[-1]]
         #fish_jt = torch.einsum('ijk,jl->ilk', [q, self.fish_jt])[:,:,window:post_z.shape[-1]]
 
         y_window = []
