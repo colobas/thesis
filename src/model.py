@@ -11,7 +11,7 @@ import math
 from st_gumbel import gumbel_softmax, gumbel_softmax_sample
 
 def categorical_kld(p, q):
-    return torch.sum(torch.sum(torch.mul(p, torch.log(p)-torch.log(q)), 1))
+    return torch.sum(torch.sum(torch.mul(p, torch.log(p+1e-6)-torch.log(q+1e-6)), 1))
 
 #def categorical_kld(p, q, p_logits, q_logits):
 #    t = p * (p_logits - q_logits)
@@ -29,11 +29,10 @@ def flip(x, dim):
     return x[tuple(indices)]
 
 class Model(nn.Module):
-    def __init__(self, n_layers, n_dims, bottlenecks, n_regimes,
-                 dilations, kernel_size, window, hidden_temp):
+    def __init__(self, n_dims, bottlenecks, n_regimes, dilations,
+                 kernel_size, window, hidden_temp, params_net_layers):
         super(Model, self).__init__()
 
-        self.n_layers = n_layers
         self.n_dims = n_dims
         self.bottlenecks = bottlenecks
         self.dilations = dilations
@@ -41,9 +40,11 @@ class Model(nn.Module):
         self.n_regimes = n_regimes
         self.window = window
         self.hidden_temp = hidden_temp
+        self.params_net_layers = params_net_layers
+        assert len(bottlenecks) == len(dilations)
 
-        assert n_layers == len(dilations)
-        assert n_layers == len(bottlenecks)
+        n_layers = len(bottlenecks)
+        self.n_layers = n_layers
 
         self.convs = [
             nn.Conv1d(
@@ -101,23 +102,18 @@ class Model(nn.Module):
 
         self.final_infer_conv = nn.Conv1d(n_regimes, n_regimes, 1).cuda()
 
-        self.params_conv_weights = nn.Parameter(torch.stack([
-            torch.rand(n_dims, bottlenecks[-1]).cuda()\
-            for _ in range(n_regimes)
-        ]))
-        self.params_conv_bias = nn.Parameter(torch.stack([
-            torch.rand(n_dims).cuda()\
-            for _ in range(n_regimes)
-        ]))
-
-        self.pre_cov_tt = nn.Parameter(torch.stack([
-            torch.rand(1).cuda()\
-            for _ in range(n_regimes)
-        ]))
-        self.fish_jt = nn.Parameter(torch.stack([
-            torch.zeros(window).cuda()\
-            for _ in range(n_regimes)
-        ]))
+        self.params_weights = nn.ParameterList([
+            nn.Parameter(torch.stack([
+                torch.rand(params_net_layers[i+1], params_net_layers[i]).cuda()\
+                for _ in range(n_regimes)
+            ])) for i in range(len(params_net_layers)-1)
+        ])
+        self.params_bias = nn.ParameterList([
+            nn.Parameter(torch.stack([
+                torch.rand(params_net_layers[i+1]).cuda()\
+                for _ in range(n_regimes)
+            ])) for i in range(len(params_net_layers)-1)
+        ])
 
 
     def inference_pass(self, y):
@@ -145,8 +141,8 @@ class Model(nn.Module):
         b_vecs = self.inference_pass(y[:,:,1:])
 
         #h_inf = torch.cat((h_vecs, b_vecs), 1)
-        h_inf = h_vecs+b_vecs
-        #h_inf = b_vecs
+        #h_inf = h_vecs+b_vecs
+        h_inf = b_vecs
         h_inf = self.final_infer_conv(h_inf)
         h_inf = F.rrelu(h_inf)
         h_inf = h_inf**2 + 10e-4
@@ -161,40 +157,23 @@ class Model(nn.Module):
         p = F.softmax(h_vecs/self.hidden_temp, 1)
         gen_z = gumbel_softmax(torch.log(p).permute(0,2,1), 0.1).permute(0,2,1)
 
-        weight = torch.einsum('ijk,jel->ielk',[gen_z, self.params_conv_weights])
-        bias = torch.einsum('ijk,jl->ilk',[gen_z, self.params_conv_bias])
+        weight = torch.einsum('ijk,jel->ielk',[gen_z, self.params_weights[0]])
+        bias = torch.einsum('ijk,jl->ilk',[gen_z, self.params_bias[0]])
+        params = torch.einsum('idjt,ikjt->idt', [weight, pre_h_vecs.unsqueeze(1)]) + bias
+        F.rrelu(params)
+        for weight, bias in zip(self.params_weights[1:], self.params_bias[1:]):
+            _weight = torch.einsum('ijk,jel->ielk',[gen_z, weight])
+            _bias = torch.einsum('ijk,jl->ilk',[gen_z, bias])
+            params = torch.einsum('idjt,ikjt->idt', [_weight, params.unsqueeze(1)]) + _bias
+            F.rrelu(params)
 
-        mus = torch.einsum('idjt,ikjt->idt', [weight, pre_h_vecs.unsqueeze(1)]) + bias
-
-        window = self.window
-
-        cov_tt = (F.relu(
-            torch.einsum('ijk,jl->ilk', [gen_z, self.pre_cov_tt])
-        ).clamp(min=10e-4, max=1))[:,:,window:gen_z.shape[-1]]
-
-        fish_jt = torch.einsum('ijk,jl->ilk', [gen_z, self.fish_jt])[:,:,window:gen_z.shape[-1]]
-
-        x_window = []
-        mus_window = []
-
-        for i in range(window, x.shape[-1]):
-            x_window.append(x[:,:,i-window:i].squeeze(1))
-            mus_window.append(mus[:,:,i-window:i].squeeze(1))
-
-        x_window = torch.stack(x_window, 2)
-        mus_window = torch.stack(mus_window, 2)
-
-        _mus = mus[:,:,window:gen_z.shape[-1]].squeeze(1) - torch.einsum(
-            'ijt,ijt->it', [(cov_tt)*(fish_jt), (x_window - mus_window)]
-        )
-
-
-        #mu = _mus[:,-1]
+        mus, sigmas = torch.chunk(params, 2, dim=1)
+        sigmas = 0.5 + 0.5*torch.tanh(sigmas) + 10e-4
 
 #        normals = dist.Normal(mu, cov_tt)
 #        return normals.sample(), mu, gen_z
 
-        return _mus, mus, gen_z, fish_jt, cov_tt, p
+        return mus, sigmas, gen_z
 
     def compute_loss(self, inputs, temp):
         x, y = inputs
@@ -205,8 +184,8 @@ class Model(nn.Module):
         p = F.softmax(h_vecs/self.hidden_temp, 1)
 
         #h_inf = torch.cat((h_vecs, b_vecs), 1)
-        h_inf = h_vecs+b_vecs
-        #h_inf = b_vecs
+        #h_inf = h_vecs+b_vecs
+        h_inf = b_vecs
         h_inf = self.final_infer_conv(h_inf)
         h_inf = F.rrelu(h_inf)
         q = F.softmax(h_inf/self.hidden_temp, 1)
@@ -214,37 +193,24 @@ class Model(nn.Module):
         #post_z = gumbel_softmax_sample(torch.log(q).permute(0,2,1), temp).permute(0,2,1)
         post_z = gumbel_softmax(torch.log(q).permute(0,2,1), temp).permute(0,2,1)
 
-        weight = torch.einsum('ijk,jel->ielk',[post_z, self.params_conv_weights])
-        bias = torch.einsum('ijk,jl->ilk',[post_z, self.params_conv_bias])
+        weight = torch.einsum('ijk,jel->ielk',[post_z, self.params_weights[0]])
+        bias = torch.einsum('ijk,jl->ilk',[post_z, self.params_bias[0]])
+        params = torch.einsum('idjt,ikjt->idt', [weight, pre_h_vecs.unsqueeze(1)]) + bias
+        F.rrelu(params)
+        for weight, bias in zip(self.params_weights[1:], self.params_bias[1:]):
+            _weight = torch.einsum('ijk,jel->ielk',[post_z, weight])
+            _bias = torch.einsum('ijk,jl->ilk',[post_z, bias])
+            params = torch.einsum('idjt,ikjt->idt', [_weight, params.unsqueeze(1)]) + _bias
+            F.rrelu(params)
 
-        mus = torch.einsum('idjt,ikjt->idt', [weight, pre_h_vecs.unsqueeze(1)]) + bias
-        mus = F.rrelu(mus)
+        mus, sigmas = torch.chunk(params, 2, dim=1)
+        sigmas = 0.5 + 0.5*torch.tanh(sigmas) + 10e-4
 
-        window = self.window
-
-        cov_tt = (F.relu(
-            torch.einsum('ijk,jl->ilk', [post_z, self.pre_cov_tt])
-        ).clamp(min=10e-4, max=1))[:,:,window:post_z.shape[-1]]
-
-        fish_jt = torch.einsum('ijk,jl->ilk', [post_z, self.fish_jt])[:,:,window:post_z.shape[-1]]
-        #cov_tt = (torch.einsum('ijk,jl->ilk', [q, self.pre_cov_tt])**2)[:,:,window:post_z.shape[-1]]
-        #fish_jt = torch.einsum('ijk,jl->ilk', [q, self.fish_jt])[:,:,window:post_z.shape[-1]]
-
-        y_window = []
-        mus_window = []
-
-        for i in range(window, y.shape[-1]):
-            y_window.append(y[:,:,i-window:i].squeeze(1))
-            mus_window.append(mus[:,:,i-window:i].squeeze(1))
-
-        y_window = torch.stack(y_window, 2)
-        mus_window = torch.stack(mus_window, 2)
-
-        _mus = mus[:,:,window:post_z.shape[-1]].squeeze(1) - torch.einsum(
-            'ijt,ijt->it', [(cov_tt)*(fish_jt), (y_window - mus_window)]
-        )
-
-        logl = loglikelihood(_mus, cov_tt, y[:,:,window:y.shape[-1]])
+        logl = 0
+        for dim in range(self.n_dims):
+            logl = logl + loglikelihood(mus[:,dim,:].unsqueeze(1),
+                                        sigmas[:,dim,:].unsqueeze(1),
+                                        y[:,dim,:].unsqueeze(1))
 
         return (
                 torch.mean(logl),
