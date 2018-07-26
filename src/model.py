@@ -6,21 +6,14 @@ import torch.nn.functional as F
 import torch.distributions as dist
 import torch.autograd as ag
 
-import math
-
 from st_gumbel import gumbel_softmax, gumbel_softmax_sample
-
 
 PI = torch.Tensor([np.pi]).cuda()
 
-def categorical_kld(p, q):
-    return torch.sum(torch.sum(torch.mul(p, torch.log(p+1e-6)-torch.log(q+1e-6)), 1))
-
-#def categorical_kld(p, q, p_logits, q_logits):
-#    t = p * (p_logits - q_logits)
-#    t[q == 0] = float('inf')
-#    t[p == 0] = 0
-#    return t.sum().sum()
+def categorical_kld(logp, logq):
+    p = torch.exp(logp)
+    t = p * (logp - logq)
+    return t.sum().sum()
 
 def loglikelihood(mus, logvars, preds):
     var = torch.exp(logvars)
@@ -38,23 +31,40 @@ def flip(x, dim):
     return x[tuple(indices)]
 
 
-def regime_dynamics(p, inert, temp):
+def regime_dynamics(logp, inert, temp):
     #z = torch.zeros_like(p).cuda()
     z = []
     #new_p = torch.zeros_like(p).cuda()
-    new_p = []
-    inert = (0.5 + 0.5 * torch.tanh(inert).unsqueeze(1)).clamp(min=0.01, max=0.99)
+    new_logp = []
 
-    z.append(gumbel_softmax(torch.log(p[:,:,0] + 1e-6).unsqueeze(2).permute(0,2,1), temp).permute(0,2,1))
-    new_p.append(p[:,:,0].clone().unsqueeze(2))
+    p = torch.exp(logp)
+
+    if type(inert) != float:
+        inert = (0.5 + 0.5 * torch.tanh(inert).unsqueeze(1)).clamp(min=0.01, max=0.99)
+    else:
+        inert = torch.Tensor([inert]).cuda()
+
+    z.append(gumbel_softmax(logp[:,:,0].unsqueeze(2).permute(0,2,1), temp).permute(0,2,1))
+    new_logp.append(logp[:,:,0].clone().unsqueeze(2))
     for t in range(1,p.shape[-1]):
-        new_p.append(((1-inert[:,:,t])*p[:,:,t] + inert[:,:,t]*z[t-1].squeeze()).unsqueeze(2))
-        z.append(gumbel_softmax(torch.log(new_p[t] + 1e-6).permute(0,2,1), temp).permute(0,2,1))
+        if inert.shape == torch.Size([1]):
+            new_logp.append(
+                (torch.log(1-inert) + logp[:,:,t] + torch.log(1 + (inert*(new_logp[t-1].exp()).squeeze())/((1-inert))))\
+                        .unsqueeze(2)
+            )
+        else:
+            new_logp.append(
+                    (torch.log(1-inert[:,:,t]) + logp[:,:,t] + torch.log(1 + (inert[:,:,t]*(new_logp[t-1].exp()).squeeze())/((1-inert[:,:,t]))))\
+                        .unsqueeze(2)
+            )
 
-    new_p = torch.cat(new_p, dim=2)
-    z = torch.cat(z, dim=2)
+        #z.append(gumbel_softmax(new_logp[t].permute(0,2,1), temp).permute(0,2,1))
 
-    return new_p, z
+    new_logp = torch.cat(new_logp, dim=2)
+    #z = torch.cat(z, dim=2)
+    z = gumbel_softmax(new_logp.permute(0,2,1), temp).permute(0,2,1)
+
+    return new_logp, z
 
 class Model(nn.Module):
     def __init__(self, n_dims, bottlenecks, n_regimes, dilations,
@@ -69,8 +79,14 @@ class Model(nn.Module):
         self.n_regimes = n_regimes
         self.window = window
         self.hidden_temp = hidden_temp
-        self.params_net_layers = params_net_layers
         self.inertia = inertia
+
+        if self.inertia == True:
+            convs_final_size = n_regimes + 1
+        else:
+            convs_final_size = n_regimes
+
+        self.params_net_layers = [convs_final_size]+ params_net_layers
 
         assert len(bottlenecks) == len(dilations)
 
@@ -93,15 +109,20 @@ class Model(nn.Module):
                 dilation=dilations[l],
             ).cuda() for l in range(1,n_layers - 1)
         ]
-        self.convs.append(
-            nn.Conv1d(
+        self.convs = nn.ModuleList(self.convs)
+
+        self.fw_prob_conv = nn.Conv1d(
                 bottlenecks[-1],
-                n_regimes + 1,
+                convs_final_size,
                 kernel_size,
                 dilation=dilations[-1],
-            ).cuda()
-        )
-        self.convs = nn.ModuleList(self.convs)
+        ).cuda()
+        self.fw_pred_conv = nn.Conv1d(
+                bottlenecks[-1],
+                convs_final_size,
+                kernel_size,
+                dilation=dilations[-1],
+        ).cuda()
 
         dilations = list(reversed(dilations))
 
@@ -124,7 +145,7 @@ class Model(nn.Module):
         self.inference_convs.append(
             nn.Conv1d(
                 bottlenecks[-1],
-                n_regimes + 1,
+                convs_final_size,
                 kernel_size,
                 dilation=dilations[-1],
             ).cuda()
@@ -133,15 +154,15 @@ class Model(nn.Module):
 
         self.params_weights = nn.ParameterList([
             nn.Parameter(torch.stack([
-                torch.rand(params_net_layers[i+1], params_net_layers[i]).cuda()\
+                torch.rand(self.params_net_layers[i+1], self.params_net_layers[i]).cuda()\
                 for _ in range(n_regimes)
-            ])) for i in range(len(params_net_layers)-1)
+            ])) for i in range(len(self.params_net_layers)-1)
         ])
         self.params_bias = nn.ParameterList([
             nn.Parameter(torch.stack([
-                torch.rand(params_net_layers[i+1]).cuda()\
+                torch.rand(self.params_net_layers[i+1]).cuda()\
                 for _ in range(n_regimes)
-            ])) for i in range(len(params_net_layers)-1)
+            ])) for i in range(len(self.params_net_layers)-1)
         ])
 
     def inference_pass(self, y):
@@ -155,11 +176,11 @@ class Model(nn.Module):
 
     def forward_pass(self, x):
         x = F.pad(x, (sum(self.dilations), 0, 0, 0))
-        for conv in self.convs[:-1]:
+        for conv in self.convs:
             x = conv(x)
             x = F.elu(x)
 
-        return F.elu(self.convs[-1](x)), x
+        return F.elu(self.fw_prob_conv(x)), F.elu(self.fw_pred_conv(x))
 
 
     def infer(self, y):
@@ -171,29 +192,38 @@ class Model(nn.Module):
         #h_inf = h_vecs+b_vecs
         h_inf = b_vecs
 
-        q = F.softmax(h_inf[:,:-1,:]/self.hidden_temp, 1)
-        if self.inertia:
-            _q, post_z = regime_dynamics(q, h_inf[:,-1,:], temp)
+        if self.inertia is not None:
+            if type(self.inertia) == float:
+                logq = F.softmax(h_inf/self.hidden_temp + 1e-6, 1)
+                _logq, post_z = regime_dynamics(logq, self.inertia, temp)
+            else:
+                logq = F.softmax(h_inf[:,:-1,:]/self.hidden_temp + 1e-6, 1)
+                _logq, post_z = regime_dynamics(logq, h_inf[:,-1,:], temp)
         else:
-            _q = q
-            #post_z = gumbel_softmax_sample(torch.log(q).permute(0,2,1), temp).permute(0,2,1)
-            post_z = gumbel_softmax(torch.log(q + 1e-6).permute(0,2,1), 0.2).permute(0,2,1)
+            logq = F.softmax(h_inf/self.hidden_temp + 1e-6, 1)
+            _logq = logq
 
-        return _q
+        return _logq.exp()
 
     def gen(self, x):
-        h_vecs, pre_h_vecs = self.forward_pass(x)
-        pre_h_vecs = pre_h_vecs[:,:,self.dilations[-1]:]
+        h_vecs, h_pred = self.forward_pass(x)
 
-        p = F.softmax(h_vecs[:,:-1,:]/self.hidden_temp + 1e-6, 1)
-        if self.inertia:
-            _, gen_z = regime_dynamics(p, h_vecs[:,-1,:], 0.2)
+        if self.inertia is not None:
+            if type(self.inertia) == float:
+                logp = F.log_softmax(h_vecs/self.hidden_temp + 1e-6, 1)
+                _logp, gen_z = regime_dynamics(logp, self.inertia, 0.2)
+            else:
+                logp = F.log_softmax(h_vecs[:,:-1,:]/self.hidden_temp + 1e-6, 1)
+                _logp, gen_z = regime_dynamics(logp, h_vecs[:,-1,:], 0.2)
         else:
-            gen_z = gumbel_softmax(torch.log(p + 1e-6).permute(0,2,1), 0.2).permute(0,2,1)
+            logp = F.log_softmax(h_vecs/self.hidden_temp + 1e-6, 1)
+            _logp = logp
+            gen_z = gumbel_softmax(_logp.permute(0,2,1), 0.2).permute(0,2,1)
+
 
         weight = torch.einsum('ijk,jel->ielk',[gen_z, self.params_weights[0]])
         bias = torch.einsum('ijk,jl->ilk',[gen_z, self.params_bias[0]])
-        params = torch.einsum('idjt,ikjt->idt', [weight, pre_h_vecs.unsqueeze(1)]) + bias
+        params = torch.einsum('idjt,ikjt->idt', [weight, h_pred.unsqueeze(1)]) + bias
         F.elu(params)
         for weight, bias in zip(self.params_weights[1:], self.params_bias[1:]):
             _weight = torch.einsum('ijk,jel->ielk',[gen_z, weight])
@@ -213,31 +243,40 @@ class Model(nn.Module):
         x, y = inputs
 
         b_vecs = self.inference_pass(y)
-        h_vecs, pre_h_vecs = self.forward_pass(x)
-        pre_h_vecs = pre_h_vecs[:,:,self.dilations[-1]:]
+        h_vecs, h_pred = self.forward_pass(x)
 
-        p = F.softmax(h_vecs[:,:-1,:]/self.hidden_temp + 1e-6, 1)
-        if self.inertia:
-            _p, pre_z = regime_dynamics(p, h_vecs[:,-1,:], temp)
+        if self.inertia is not None:
+            if type(self.inertia) == float:
+                logp = F.log_softmax(h_vecs/self.hidden_temp + 1e-6, 1)
+                _logp, _ = regime_dynamics(logp, self.inertia, temp)
+            else:
+                logp = F.log_softmax(h_vecs[:,:-1,:]/self.hidden_temp + 1e-6, 1)
+                _logp, _ = regime_dynamics(logp, h_vecs[:,-1,:], temp)
         else:
-            _p = p
+            logp = F.log_softmax(h_vecs/self.hidden_temp + 1e-6, 1)
+            _logp = logp
+
 
         #h_inf = torch.cat((h_vecs, b_vecs), 1)
         #h_inf = h_vecs+b_vecs
         h_inf = b_vecs
 
-        q = F.softmax(h_inf[:,:-1,:]/self.hidden_temp + 1e-6, 1)
-        if self.inertia:
-            _q, post_z = regime_dynamics(q, h_inf[:,-1,:], temp)
+        if self.inertia is not None:
+            if type(self.inertia) == float:
+                logq = F.softmax(h_inf/self.hidden_temp + 1e-6, 1)
+                _logq, post_z = regime_dynamics(logq, self.inertia, temp)
+            else:
+                logq = F.softmax(h_inf[:,:-1,:]/self.hidden_temp + 1e-6, 1)
+                _logq, post_z = regime_dynamics(logq, h_inf[:,-1,:], temp)
         else:
-            _q = q
+            logq = F.softmax(h_inf/self.hidden_temp + 1e-6, 1)
+            _logq = logq
             #post_z = gumbel_softmax_sample(torch.log(q).permute(0,2,1), temp).permute(0,2,1)
-            post_z = gumbel_softmax(torch.log(q + 1e-6).permute(0,2,1), temp).permute(0,2,1)
-
+            post_z = gumbel_softmax(_logq.permute(0,2,1), temp).permute(0,2,1)
 
         weight = torch.einsum('ijk,jel->ielk',[post_z, self.params_weights[0]])
         bias = torch.einsum('ijk,jl->ilk',[post_z, self.params_bias[0]])
-        params = torch.einsum('idjt,ikjt->idt', [weight, pre_h_vecs.unsqueeze(1)]) + bias
+        params = torch.einsum('idjt,ikjt->idt', [weight, h_pred.unsqueeze(1)]) + bias
         F.elu(params)
         for weight, bias in zip(self.params_weights[1:], self.params_bias[1:]):
             _weight = torch.einsum('ijk,jel->ielk',[post_z, weight])
@@ -246,7 +285,7 @@ class Model(nn.Module):
             F.elu(params)
 
         mus, logvars = torch.chunk(params, 2, dim=1)
-        logvars = logvars.clamp(min=-3,max=1)
+        logvars = logvars.clamp(min=-3,max=0)
 
         logl = 0
         for dim in range(self.n_dims):
@@ -256,5 +295,5 @@ class Model(nn.Module):
 
         return (
                 torch.mean(logl),
-                -categorical_kld(_q, _p),
+                -categorical_kld(_logq, _logp),
                )
