@@ -12,7 +12,10 @@ PI = torch.Tensor([np.pi]).cuda()
 
 def categorical_kld(logp, logq):
     p = torch.exp(logp)
+    q = torch.exp(logq)
+
     t = p * (logp - logq)
+
     return t.sum().sum()
 
 def loglikelihood(mus, logvars, preds):
@@ -30,8 +33,44 @@ def flip(x, dim):
                                 dtype=torch.long, device=x.device)
     return x[tuple(indices)]
 
+def hard_regime_dynamics(logp, inert, temp):
+    #z = torch.zeros_like(p).cuda()
+    z = []
+    #new_p = torch.zeros_like(p).cuda()
+    new_logp = []
 
-def regime_dynamics(logp, inert, temp):
+    p = logp.exp()
+
+    if type(inert) != float:
+        inert = (0.5 + 0.5 * torch.tanh(inert).unsqueeze(1)).clamp(min=0.01, max=0.99)
+    else:
+        inert = torch.Tensor([inert]).cuda()
+
+    z.append(gumbel_softmax(logp[:,:,0].unsqueeze(2).permute(0,2,1), temp).permute(0,2,1))
+    new_logp.append(logp[:,:,0].clone().unsqueeze(2))
+    for t in range(1,p.shape[-1]):
+        if inert.shape == torch.Size([1]):
+            new_logp.append(
+                (logp[:,:,t] + torch.log(1 + inert*(z[t-1].squeeze()\
+                    -p[:,:,t])/p[:,:,t]))\
+                        .unsqueeze(2)
+            )
+        else:
+            new_logp.append(
+                (logp[:,:,t] + torch.log(1 + inert[:,:,t]*(z[t-1].squeeze()\
+                    -p[:,:,t])/p[:,:,t]))\
+                        .unsqueeze(2)
+            )
+
+        z.append(gumbel_softmax(new_logp[t].permute(0,2,1), temp).permute(0,2,1))
+
+    new_logp = torch.cat(new_logp, dim=2)
+    z = torch.cat(z, dim=2)
+
+    return new_logp, z
+
+
+def soft_regime_dynamics(logp, inert, temp):
     #z = torch.zeros_like(p).cuda()
     z = []
     #new_p = torch.zeros_like(p).cuda()
@@ -44,19 +83,21 @@ def regime_dynamics(logp, inert, temp):
     else:
         inert = torch.Tensor([inert]).cuda()
 
-    z.append(gumbel_softmax(logp[:,:,0].unsqueeze(2).permute(0,2,1), temp).permute(0,2,1))
     new_logp.append(logp[:,:,0].clone().unsqueeze(2))
     for t in range(1,p.shape[-1]):
         if inert.shape == torch.Size([1]):
             new_logp.append(
-                (torch.log(1-inert) + logp[:,:,t] + torch.log(1 + (inert*(new_logp[t-1].exp()).squeeze())/((1-inert))))\
+                (logp[:,:,t] + torch.log(1 + inert*(new_logp[t-1].exp().squeeze()\
+                    -p[:,:,t])/p[:,:,t]))\
                         .unsqueeze(2)
             )
         else:
             new_logp.append(
-                    (torch.log(1-inert[:,:,t]) + logp[:,:,t] + torch.log(1 + (inert[:,:,t]*(new_logp[t-1].exp()).squeeze())/((1-inert[:,:,t]))))\
+                (logp[:,:,t] + torch.log(1 + inert[:,:,t]*(new_logp[t-1].exp().squeeze()\
+                    -p[:,:,t])/p[:,:,t]))\
                         .unsqueeze(2)
             )
+
 
         #z.append(gumbel_softmax(new_logp[t].permute(0,2,1), temp).permute(0,2,1))
 
@@ -68,7 +109,7 @@ def regime_dynamics(logp, inert, temp):
 
 class Model(nn.Module):
     def __init__(self, n_dims, bottlenecks, n_regimes, dilations,
-                 kernel_size, window, hidden_temp, params_net_layers,
+                 kernel_size, hidden_temp, params_net_layers,
                  inertia):
         super(Model, self).__init__()
 
@@ -77,7 +118,6 @@ class Model(nn.Module):
         self.dilations = dilations
         self.kernel_size = kernel_size
         self.n_regimes = n_regimes
-        self.window = window
         self.hidden_temp = hidden_temp
         self.inertia = inertia
 
@@ -189,18 +229,18 @@ class Model(nn.Module):
         b_vecs = self.inference_pass(y[:,:,1:])
 
         #h_inf = torch.cat((h_vecs, b_vecs), 1)
-        #h_inf = h_vecs+b_vecs
-        h_inf = b_vecs
+        h_inf = h_vecs+b_vecs
+        #h_inf = b_vecs
 
         if self.inertia is not None:
             if type(self.inertia) == float:
-                logq = F.softmax(h_inf/self.hidden_temp + 1e-6, 1)
-                _logq, post_z = regime_dynamics(logq, self.inertia, temp)
+                logq = F.log_softmax(h_inf/self.hidden_temp + 1e-6, 1)
+                _logq, post_z = soft_regime_dynamics(logq, self.inertia, 0.2)
             else:
-                logq = F.softmax(h_inf[:,:-1,:]/self.hidden_temp + 1e-6, 1)
-                _logq, post_z = regime_dynamics(logq, h_inf[:,-1,:], temp)
+                logq = F.log_softmax(h_inf[:,:-1,:]/self.hidden_temp + 1e-6, 1)
+                _logq, post_z = soft_regime_dynamics(logq, h_inf[:,-1,:], 0.2)
         else:
-            logq = F.softmax(h_inf/self.hidden_temp + 1e-6, 1)
+            logq = F.log_softmax(h_inf/self.hidden_temp + 1e-6, 1)
             _logq = logq
 
         return _logq.exp()
@@ -211,10 +251,10 @@ class Model(nn.Module):
         if self.inertia is not None:
             if type(self.inertia) == float:
                 logp = F.log_softmax(h_vecs/self.hidden_temp + 1e-6, 1)
-                _logp, gen_z = regime_dynamics(logp, self.inertia, 0.2)
+                _logp, gen_z = hard_regime_dynamics(logp, self.inertia, 0.2)
             else:
                 logp = F.log_softmax(h_vecs[:,:-1,:]/self.hidden_temp + 1e-6, 1)
-                _logp, gen_z = regime_dynamics(logp, h_vecs[:,-1,:], 0.2)
+                _logp, gen_z = hard_regime_dynamics(logp, h_vecs[:,-1,:], 0.2)
         else:
             logp = F.log_softmax(h_vecs/self.hidden_temp + 1e-6, 1)
             _logp = logp
@@ -248,28 +288,27 @@ class Model(nn.Module):
         if self.inertia is not None:
             if type(self.inertia) == float:
                 logp = F.log_softmax(h_vecs/self.hidden_temp + 1e-6, 1)
-                _logp, _ = regime_dynamics(logp, self.inertia, temp)
+                _logp, _ = hard_regime_dynamics(logp, self.inertia, temp)
             else:
                 logp = F.log_softmax(h_vecs[:,:-1,:]/self.hidden_temp + 1e-6, 1)
-                _logp, _ = regime_dynamics(logp, h_vecs[:,-1,:], temp)
+                _logp, _ = hard_regime_dynamics(logp, h_vecs[:,-1,:], temp)
         else:
             logp = F.log_softmax(h_vecs/self.hidden_temp + 1e-6, 1)
             _logp = logp
 
-
         #h_inf = torch.cat((h_vecs, b_vecs), 1)
-        #h_inf = h_vecs+b_vecs
-        h_inf = b_vecs
+        h_inf = h_vecs+b_vecs
+        #h_inf = b_vecs
 
         if self.inertia is not None:
             if type(self.inertia) == float:
-                logq = F.softmax(h_inf/self.hidden_temp + 1e-6, 1)
-                _logq, post_z = regime_dynamics(logq, self.inertia, temp)
+                logq = F.log_softmax(h_inf/self.hidden_temp + 1e-6, 1)
+                _logq, post_z = soft_regime_dynamics(logq, self.inertia, temp)
             else:
-                logq = F.softmax(h_inf[:,:-1,:]/self.hidden_temp + 1e-6, 1)
-                _logq, post_z = regime_dynamics(logq, h_inf[:,-1,:], temp)
+                logq = F.log_softmax(h_inf[:,:-1,:]/self.hidden_temp + 1e-6, 1)
+                _logq, post_z = soft_regime_dynamics(logq, h_inf[:,-1,:], temp)
         else:
-            logq = F.softmax(h_inf/self.hidden_temp + 1e-6, 1)
+            logq = F.log_softmax(h_inf/self.hidden_temp + 1e-6, 1)
             _logq = logq
             #post_z = gumbel_softmax_sample(torch.log(q).permute(0,2,1), temp).permute(0,2,1)
             post_z = gumbel_softmax(_logq.permute(0,2,1), temp).permute(0,2,1)
