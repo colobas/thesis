@@ -22,13 +22,13 @@ def stud_t_log_prob(value, df, loc, scale):
     # adapted from: https://pytorch.org/docs/stable/_modules/torch/distributions/studentT.html
 
     y = (value.unsqueeze(1) - loc) / scale
-    Z = (scale.log() +
-         0.5 * df.log() +
-         0.5 * PI.log() +
-         torch.lgamma(0.5 * df) -
-         torch.lgamma(0.5 * (df + 1.)))
+    Z = torch.log(scale + 1e-6)
+    Z = Z + 0.5 * torch.log(df + 1e-6)
+    Z = Z + 0.5 * torch.log(PI + 1e-6)
+    Z = Z + torch.lgamma(0.5 * df + 1e-6)
+    Z = Z - torch.lgamma(0.5 * (df + 1.))
 
-    return -0.5 * (df + 1.) * torch.log1p(y**2. / df) - Z
+    return -0.5 * (df + 1.) * torch.log1p(y**2. / df + 1e-6) - Z
 
 def student_t_sample(loc, scale, df):
     X = df.new(df.shape).normal_()
