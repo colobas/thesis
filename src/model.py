@@ -10,16 +10,41 @@ from st_gumbel import gumbel_softmax, gumbel_softmax_sample
 
 PI = torch.Tensor([np.pi]).cuda()
 
+
 def categorical_kld(logp, logq):
+    """
+    Computes the KL divergence between two distributions, p and q
+
+    Args:
+        logp: 3D tensor [batch_idx, n_classes, n_timesteps]. Log probability of distribution p
+        logq: 3D tensor [batch_idx, n_classes, n_timesteps]. Log probability of distribution q
+
+    Returns:
+        Sum of KL divergences per timestep, per batch
+
+    """
     p = torch.exp(logp)
-    q = torch.exp(logq)
 
     t = p * (logp - logq)
 
     return t.sum().sum()
 
+
 def stud_t_log_prob(value, df, loc, scale):
-    # adapted from: https://pytorch.org/docs/stable/_modules/torch/distributions/studentT.html
+    """
+    Computes the log probability of an observation from a Student's T distribution
+    Adapted from: https://pytorch.org/docs/stable/_modules/torch/distributions/studentT.html
+
+    Args:
+        value: 2D tensor [batch_idx, n_timesteps]. The observation.
+        df: 2D tensor [batch_idx, n_timesteps]. Degrees of freedom.
+        loc: 2D tensor [batch_idx, n_timesteps]. Location
+        scale: 2D tensor [batch_idx, n_timesteps]. Scale
+
+    Returns:
+        Log probability of the observation given the parameters
+
+    """
 
     y = (value.unsqueeze(1) - loc) / scale
     Z = torch.log(scale + 1e-6)
@@ -28,18 +53,52 @@ def stud_t_log_prob(value, df, loc, scale):
     Z = Z + torch.lgamma(0.5 * df + 1e-6)
     Z = Z - torch.lgamma(0.5 * (df + 1.))
 
-    return -0.5 * (df + 1.) * torch.log1p(y**2. / df + 1e-6) - Z
+    return -0.5 * (df + 1.) * torch.log1p(y ** 2. / df + 1e-6) - Z
+
 
 def student_t_sample(loc, scale, df):
+    """
+    Samples from a StudentT
+
+    Args:
+        loc: 2D tensor [batch_idx, n_timesteps]. Location
+        scale: 2D tensor [batch_idx, n_timesteps]. Scale
+        df: 2D tensor [batch_idx, n_timesteps]. Degrees of freedom
+
+    Returns:
+        Sample given the parameters
+
+    """
     X = df.new(df.shape).normal_()
     Z = Chi2(df).rsample(df.shape)
     Y = X * torch.rsqrt(Z / df)
     return loc + scale * Y
 
+
 class Model(nn.Module):
+    """
+    Class to hold the Variational TRCRP
+
+    """
     def __init__(self, n_dims, bottlenecks, n_regimes, dilations,
                  kernel_size, intrinsic_probs, capacity, p, v_0, a_0,
                  m_0, b_0):
+        """
+
+        Args:
+            n_dims: int. number of dimensions of the timeseries data to be modelled
+            bottlenecks: list of ints. bottlenecks of the convolution layers
+            n_regimes: int. number of regimes to be found on the timeseries data.
+            dilations: list of ints. dilations of the convolution layers
+            kernel_size: int. kernel size of the convolution layers
+            intrinsic_probs: list of floats. intrisic probabilities of each regime
+            capacity: int. capacity of the (finite) chinese restaurant.
+            p: int. window size for regime-conditional probabilities parameters calculation.
+            v_0: hyperparam
+            a_0: hyperparam
+            m_0: hyperparam
+            b_0: hyperparam
+        """
         super(Model, self).__init__()
 
         self.n_dims = n_dims
@@ -65,7 +124,7 @@ class Model(nn.Module):
 
         self.convs = [
             nn.Conv1d(
-                n_dims+n_regimes,
+                n_dims + n_regimes,
                 bottlenecks[0],
                 kernel_size,
                 dilation=dilations[0],
@@ -73,11 +132,11 @@ class Model(nn.Module):
         ]
         self.convs += [
             nn.Conv1d(
-                bottlenecks[l-1],
+                bottlenecks[l - 1],
                 bottlenecks[l],
                 kernel_size,
                 dilation=dilations[l],
-            ).cuda() for l in range(1,n_layers - 1)
+            ).cuda() for l in range(1, n_layers - 1)
         ]
         self.convs.append(
             nn.Conv1d(
@@ -92,13 +151,13 @@ class Model(nn.Module):
 
     def forward(self, x, temp, T):
         x = F.pad(x, (sum(self.dilations), 0, 0, 0))
-        #z = [torch.zeros_like(x[:,:,0].unsqueeze(2)).cuda() for _ in range(sum(self.dilations))]
-        z = [torch.zeros((x.shape[0],self.n_regimes,1)).cuda() for _ in range(self.capacity)]
+        # z = [torch.zeros_like(x[:,:,0].unsqueeze(2)).cuda() for _ in range(sum(self.dilations))]
+        z = [torch.zeros((x.shape[0], self.n_regimes, 1)).cuda() for _ in range(self.capacity)]
         logq = []
 
         for t in range(self.capacity, T):
-            _x = x[:,:,t-self.capacity:t]
-            _z = torch.cat(z[t-self.capacity:t], dim=2)
+            _x = x[:, :, t - self.capacity:t]
+            _z = torch.cat(z[t - self.capacity:t], dim=2)
 
             inp = torch.cat((_x, _z), dim=1)
 
@@ -106,10 +165,10 @@ class Model(nn.Module):
                 inp = conv(inp)
                 inp = F.elu(inp)
 
-            _logq = F.log_softmax(inp, dim=1)[:,:,-1].unsqueeze(2)
+            _logq = F.log_softmax(inp, dim=1)[:, :, -1].unsqueeze(2)
             logq.append(_logq)
 
-            z.append(gumbel_softmax(_logq.permute(0,2,1), temp).permute(0,2,1))
+            z.append(gumbel_softmax(_logq.permute(0, 2, 1), temp).permute(0, 2, 1))
 
         return torch.cat(z, dim=2), torch.stack(logq, dim=2)
 
@@ -118,35 +177,41 @@ class Model(nn.Module):
         _log_wtk = []
         _n = []
 
-        for t in range(capacity,T):
-            _n.append(z[:,:,t-capacity:t].sum(dim=2))
-            #_n.append(_n[t-capacity-1] - z[:,:,t-capacity-1] + z[:,:,t])
-            log_wtk = torch.zeros_like(z[:,:,0])
+        for t in range(capacity, T):
+            _n.append(z[:, :, t - capacity:t].sum(dim=2))
+            # _n.append(_n[t-capacity-1] - z[:,:,t-capacity-1] + z[:,:,t])
+            log_wtk = torch.zeros_like(z[:, :, 0])
 
-            _n_tk0 = torch.einsum("bit->bi",[z[:,:,:t-1]])
-            _sum_x_0tk = torch.einsum("bit,bjt->bji",[x[:,:,:t-1],z[:,:,:t-1]])
-            _sum_x_sqr_0tk = torch.einsum("bit,bjt->bji",[x[:,:,:t-1].pow(2),z[:,:,:t-1]])
+            _n_tk0 = torch.einsum("bit->bi", [z[:, :, :t - 1]])
+            _sum_x_0tk = torch.einsum("bit,bjt->bji", [x[:, :, :t - 1], z[:, :, :t - 1]])
+            _sum_x_sqr_0tk = torch.einsum("bit,bjt->bji", [x[:, :, :t - 1].pow(2), z[:, :, :t - 1]])
 
-            v_tk0 = 1/((1/self.v_0[0]).unsqueeze(0) + _n_tk0.unsqueeze(2))
-            m_tk0 = v_tk0 * ((1/self.v_0[0]) + _sum_x_0tk)
-            a_tk0 = self.a_0[0].unsqueeze(0).unsqueeze(0) + (_n_tk0/2).unsqueeze(2)
-            b_tk0 = self.b_0 + 0.5 * (self.m_0[0].pow(2)/self.v_0[0] + _sum_x_sqr_0tk - m_tk0.pow(2)/v_tk0)
+            v_tk0 = 1 / ((1 / self.v_0[0]).unsqueeze(0) + _n_tk0.unsqueeze(2))
+            m_tk0 = v_tk0 * ((1 / self.v_0[0]) + _sum_x_0tk)
+            a_tk0 = self.a_0[0].unsqueeze(0).unsqueeze(0) + (_n_tk0 / 2).unsqueeze(2)
+            b_tk0 = self.b_0 + 0.5 * (self.m_0[0].pow(2) / self.v_0[0] + _sum_x_sqr_0tk - m_tk0.pow(2) / v_tk0)
 
-            _log_loss = _log_loss + sum([torch.einsum("bj,bj->b", [z[:,:,t], stud_t_log_prob(x[:,d,t], a_tk0[:,:,d],
-                m_tk0[:,:,d], b_tk0[:,:,d]*(v_tk0[:,:,d] + 1)/a_tk0[:,:,d])]) for d in range(self.n_dims)])
+            _log_loss = _log_loss + sum(
+                [torch.einsum("bj,bj->b", [z[:, :, t], stud_t_log_prob(x[:, d, t], a_tk0[:, :, d],
+                                                                       m_tk0[:, :, d],
+                                                                       b_tk0[:, :, d] * (v_tk0[:, :, d] + 1) / a_tk0[:,
+                                                                                                               :, d])])
+                 for d in range(self.n_dims)])
 
-            for i in range(1,self.p):
-                _n_tki = torch.einsum("bit->bi",[z[:,:,:t-i-1]])
-                _sum_x_itk = torch.einsum("bit,bjt->bji",[x[:,:,:t-i-1],z[:,:,i:t-1]])
-                _sum_x_sqr_itk = torch.einsum("bit,bjt->bji",[x[:,:,:t-i-1].pow(2),z[:,:,i:t-1]])
+            for i in range(1, self.p):
+                _n_tki = torch.einsum("bit->bi", [z[:, :, :t - i - 1]])
+                _sum_x_itk = torch.einsum("bit,bjt->bji", [x[:, :, :t - i - 1], z[:, :, i:t - 1]])
+                _sum_x_sqr_itk = torch.einsum("bit,bjt->bji", [x[:, :, :t - i - 1].pow(2), z[:, :, i:t - 1]])
 
-                v_tki = 1/((1/self.v_0[i]).unsqueeze(0) + _n_tki.unsqueeze(2))
-                m_tki = v_tki * ((1/self.v_0[i]).unsqueeze(0) + _sum_x_itk)
-                a_tki = self.a_0[i].unsqueeze(0).unsqueeze(0) + (_n_tki/2).unsqueeze(2)
-                b_tki = self.b_0 + 0.5 * (self.m_0[i].pow(2)/self.v_0[i] + _sum_x_sqr_itk - m_tki.pow(2)/v_tki)
+                v_tki = 1 / ((1 / self.v_0[i]).unsqueeze(0) + _n_tki.unsqueeze(2))
+                m_tki = v_tki * ((1 / self.v_0[i]).unsqueeze(0) + _sum_x_itk)
+                a_tki = self.a_0[i].unsqueeze(0).unsqueeze(0) + (_n_tki / 2).unsqueeze(2)
+                b_tki = self.b_0 + 0.5 * (self.m_0[i].pow(2) / self.v_0[i] + _sum_x_sqr_itk - m_tki.pow(2) / v_tki)
 
-                log_wtk = log_wtk + sum([stud_t_log_prob(x[:,d,t-i], a_tki[:,:,d], 
-                    m_tki[:,:,d], b_tki[:,:,d]*(v_tki[:,:,d] + 1)/a_tki[:,:,d]) for d in range(self.n_dims)])
+                log_wtk = log_wtk + sum([stud_t_log_prob(x[:, d, t - i], a_tki[:, :, d],
+                                                         m_tki[:, :, d],
+                                                         b_tki[:, :, d] * (v_tki[:, :, d] + 1) / a_tki[:, :, d]) for d
+                                         in range(self.n_dims)])
             _log_wtk.append(log_wtk)
 
         _log_wtk = torch.stack(_log_wtk, dim=2)
@@ -156,16 +221,15 @@ class Model(nn.Module):
 
     def kl_regimes(self, z, capacity, _n_tk, log_wtk, sum_log_wtk):
         for k in range(self.n_regimes):
-            _n_tk[:,k,:] = (_n_tk[:,k,:].clone() + self.intrinsic_probs[k])
+            _n_tk[:, k, :] = (_n_tk[:, k, :].clone() + self.intrinsic_probs[k])
 
-        return torch.einsum("bkt,bkt->b", [z[:,:,capacity:], torch.log(_n_tk + 1e-6)\
-             - torch.log(torch.Tensor([capacity + self.sum_intrinsic + 1e-6]).cuda())\
-             + log_wtk\
-             - sum_log_wtk.unsqueeze(1)]).sum()
+        return torch.einsum("bkt,bkt->b", [z[:, :, capacity:], torch.log(_n_tk + 1e-6) \
+                                           - torch.log(torch.Tensor([capacity + self.sum_intrinsic + 1e-6]).cuda()) \
+                                           + log_wtk \
+                                           - sum_log_wtk.unsqueeze(1)]).sum()
 
     def compute_loss(self, x, z, T):
         _log_wtk, _sum_log_wtk, _n_tk, log_loss = self.reweighting(self.capacity, x, z, T)
         kl_loss = self.kl_regimes(z, self.capacity, _n_tk, _log_wtk, _sum_log_wtk)
 
         return log_loss.sum(), kl_loss
-
