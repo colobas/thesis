@@ -48,7 +48,7 @@ def mv_gaussian_log_prob(value, μ, Σ, event_shape, diag_mode=False, debug=Fals
 #       - Pros: has .paramers() method
 #       - Cons: can cause confusion? (no forward nor backward method)
 class DeepGMM(nn.Module):
-    def __init__(self, n_clusters, y_dim, x_dim, encoder, decoder, reg=1,
+    def __init__(self, n_clusters, y_dim, x_dim, encoder, decoder, reg=0.01,
                  diag_mode=False):
         """
             Note that Y are the observations (the data)
@@ -71,8 +71,8 @@ class DeepGMM(nn.Module):
         ]))
 
         # Σ = Σ_factor @ Σ_factor.t() + Σ_diag
-        self.ϕ_gmm_Σ_diags = nn.Parameter(torch.stack([
-            torch.rand(x_dim)
+        self.ϕ_gmm_Σ_sqrt_diags = nn.Parameter(torch.stack([
+            torch.randn(x_dim)
             for _ in range(n_clusters)
         ]))
 
@@ -99,8 +99,8 @@ class DeepGMM(nn.Module):
         ]))
 
         # Σ = Σ_factor @ Σ_factor.t() + Σ_diag
-        self.θ_gmm_Σ_diags = nn.Parameter(torch.stack([
-            torch.rand(y_dim)
+        self.θ_gmm_Σ_sqrt_diags = nn.Parameter(torch.stack([
+            torch.randn(y_dim)
             for _ in range(n_clusters)
         ]))
 
@@ -117,8 +117,26 @@ class DeepGMM(nn.Module):
         self.θ_gmm_logits_πs = nn.Parameter(torch.randn(n_clusters))
         ##########################################################
 
+    def ϕ_gmm_Σ_diag_k(self, k):
+        #return self.ϕ_gmm_Σ_sqrt_diags[k]**2 + self.reg
+        return F.sigmoid(self.ϕ_gmm_Σ_sqrt_diags[k]) + self.reg
+
+    @property
+    def ϕ_gmm_Σ_diags(self):
+        #return self.ϕ_gmm_Σ_sqrt_diags**2 + self.reg
+        return F.sigmoid(self.ϕ_gmm_Σ_sqrt_diags) + self.reg
+
+    def θ_gmm_Σ_diag_k(self, k):
+        #return self.θ_gmm_Σ_sqrt_diags[k]**2 + self.reg
+        return F.sigmoid(self.θ_gmm_Σ_sqrt_diags[k])+ self.reg
+
+    @property
+    def θ_gmm_Σ_diags(self):
+        #return self.θ_gmm_Σ_sqrt_diags**2 + self.reg
+        return F.sigmoid(self.θ_gmm_Σ_sqrt_diags) + self.reg
+
     def _Σ(self, factor, diag, diag_size):
-        diag_term = torch.eye(diag_size, device=_DEVICE)*(diag + self.reg)
+        diag_term = torch.eye(diag_size, device=_DEVICE)*diag
         if not self.diag_mode:
             factor = factor.unsqueeze(-1)
             return diag_term + (factor @ factor.t())
@@ -126,14 +144,13 @@ class DeepGMM(nn.Module):
             return diag_term
 
     def ϕ_gmm_Σ_k(self, k):
-        Σ_diag = self.ϕ_gmm_Σ_diags[k]
+        Σ_diag = self.ϕ_gmm_Σ_diag_k(k)
         Σ_factor = self.ϕ_gmm_Σ_factors[k]
         return self._Σ(Σ_factor, Σ_diag, self.x_dim)
 
     def θ_gmm_Σ(self, k):
+        Σ_diag = self.θ_gmm_Σ_diag_k(k)
         Σ_factor = self.θ_gmm_Σ_factors[k]
-        Σ_diag = self.θ_gmm_Σ_diags[k]
-
         return self._Σ(Σ_factor, Σ_diag, self.y_dim)
 
     def _Σs(self, factors, diags):
@@ -143,7 +160,6 @@ class DeepGMM(nn.Module):
             return (factors @ torch.transpose(factors, 1, 2)) + diat_term
         else:
             return diag_term
-
 
     @property
     def ϕ_gmm_Σs(self):
@@ -175,21 +191,14 @@ class DeepGMM(nn.Module):
 
         ϕ_gmm_log_πs = F.log_softmax(self.ϕ_gmm_logits_πs, dim=0)
 
-        print(f"ϕ_gmm_log_πs: {ϕ_gmm_log_πs}")
-
         for k in range(self.n_clusters):
             ϕ_gmm_Σ_k = self.ϕ_gmm_Σ_k(k)
 
-            #this is outputing NaNs
             aux = mv_gaussian_log_prob(value=ϕ_enc_μ, μ=self.ϕ_gmm_μs[k],
                                        Σ=ϕ_enc_Σ+ϕ_gmm_Σ_k,
                                        event_shape=self.x_dim,
-                                       diag_mode=self.diag_mode)
-            print(f"aux: {aux}")
-
-            print(f"ϕ_enc_Σ: {ϕ_enc_Σ}")
-            print(f"ϕ_gmm_Σ_k: {ϕ_gmm_Σ_k}")
-            print(f"ϕ_enc_Σ+ϕ_gmm_Σ_k: {ϕ_enc_Σ+ϕ_gmm_Σ_k}")
+                                       diag_mode=self.diag_mode,
+                                       )
             z_logits[:,k] = (ϕ_gmm_log_πs[k] + aux)
 
             # TODO: check if I'm being the smartest possible about these inverses
@@ -285,9 +294,6 @@ class DeepGMM(nn.Module):
         # what's inside parens is the ELBO, and we want to maximize it,
         # hence minimize its reciprocal
         res =  -((loss1 + loss2 + loss3 + loss4).sum()/n_samples + loss5)
-        #print(f"res: {res}")
-
-        assert res == res
 
         return res
 
@@ -333,13 +339,18 @@ class DeepGMM(nn.Module):
 
                 loss = self._fit_step(yb, temperature, n_samples)
                 losses.append((epoch, i, loss.item()))
-                #if debug != 0:
-                    #get_dot = register_hooks(loss)
+                if debug != 0:
+                    if loss != loss:
+                        get_dot = register_hooks(loss)
 
                 loss.backward()
                 if debug != 0:
                     debug_str = ""
                     print_me = False
+
+                    print(self.θ_gmm_Σs)
+                    print(self.ϕ_gmm_Σs)
+
                     if (epoch * bs + i) < debug:
                         debug_str += (f"################### debug iter {(epoch * bs + i)} #####################\n")
                         for n, p in self.named_parameters():
@@ -348,8 +359,10 @@ class DeepGMM(nn.Module):
                             if grad_mean != grad_mean:
                                 print_me = True
                         debug_str += "\n"
-                        #dot = get_dot() 
-                        #dot.render(f"iter_{i}", format="pdf")
+                        if loss != loss:
+                            dot = get_dot() 
+                            dot.render(f"iter_{i}", format="pdf")
+                            raise Exception("NAN LOSS")
                         if print_me:
                             print(debug_str)
                     else:
