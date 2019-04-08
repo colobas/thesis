@@ -76,10 +76,13 @@ class DeepGMM(nn.Module):
             for _ in range(n_clusters)
         ]))
 
-        self.ϕ_gmm_Σ_factors = nn.Parameter(torch.stack([
-            torch.randn(x_dim)
-            for _ in range(n_clusters)
-        ]))
+        if not self.diag_mode:
+            self.ϕ_gmm_Σ_factors = nn.Parameter(torch.stack([
+                torch.randn(x_dim)
+                for _ in range(n_clusters)
+            ]))
+        else:
+            self.ϕ_gmm_Σ_factors = [None for _ in range(self.n_clusters)]
 
 
         # store in logits form because it's unconstrained,
@@ -101,10 +104,13 @@ class DeepGMM(nn.Module):
             for _ in range(n_clusters)
         ]))
 
-        self.θ_gmm_Σ_factors = nn.Parameter(torch.stack([
-            torch.randn(y_dim)
-            for _ in range(n_clusters)
-        ]))
+        if not self.diag_mode:
+            self.θ_gmm_Σ_factors = nn.Parameter(torch.stack([
+                torch.randn(y_dim)
+                for _ in range(n_clusters)
+            ]))
+        else:
+            self.θ_gmm_Σ_factors = [None for _ in range(self.n_clusters)]
 
         # store in logits form because it's unconstrained,
         # then use log_softmax to convert to log probabilities
@@ -112,24 +118,32 @@ class DeepGMM(nn.Module):
         ##########################################################
 
     def _Σ(self, factor, diag, diag_size):
-        return factor @ factor.t() + torch.eye(diag_size, device=_DEVICE).cuda()*(diag + self.reg)
+        diag_term = torch.eye(diag_size, device=_DEVICE)*(diag + self.reg)
+        if not self.diag_mode:
+            factor = factor.unsqueeze(-1)
+            return diag_term + (factor @ factor.t())
+        else:
+            return diag_term
 
     def ϕ_gmm_Σ_k(self, k):
-        Σ_factor = self.ϕ_gmm_Σ_factors[k].unsqueeze(-1)
         Σ_diag = self.ϕ_gmm_Σ_diags[k]
-
+        Σ_factor = self.ϕ_gmm_Σ_factors[k]
         return self._Σ(Σ_factor, Σ_diag, self.x_dim)
 
     def θ_gmm_Σ(self, k):
-        Σ_factor = self.θ_gmm_Σ_factors[k].unsqueeze(-1)
+        Σ_factor = self.θ_gmm_Σ_factors[k]
         Σ_diag = self.θ_gmm_Σ_diags[k]
 
         return self._Σ(Σ_factor, Σ_diag, self.y_dim)
 
     def _Σs(self, factors, diags):
-        factors = factors.unsqueeze(-1)
-        return (factors @ torch.transpose(factors, 1, 2) +
-                torch.diag_embed(diags + self.reg))
+        diag_term = torch.diag_embed(diags + self.reg)
+        if not self.diag_mode:
+            factors = factors.unsqueeze(-1)
+            return (factors @ torch.transpose(factors, 1, 2)) + diat_term
+        else:
+            return diag_term
+
 
     @property
     def ϕ_gmm_Σs(self):
@@ -166,11 +180,17 @@ class DeepGMM(nn.Module):
         for k in range(self.n_clusters):
             ϕ_gmm_Σ_k = self.ϕ_gmm_Σ_k(k)
 
-            z_logits[:,k] = (ϕ_gmm_log_πs[k] + 
-                             mv_gaussian_log_prob(value=ϕ_enc_μ, μ=self.ϕ_gmm_μs[k],
-                                                  Σ=ϕ_enc_Σ+ϕ_gmm_Σ_k,
-                                                  event_shape=self.x_dim,
-                                                  diag_mode=self.diag_mode))
+            #this is outputing NaNs
+            aux = mv_gaussian_log_prob(value=ϕ_enc_μ, μ=self.ϕ_gmm_μs[k],
+                                       Σ=ϕ_enc_Σ+ϕ_gmm_Σ_k,
+                                       event_shape=self.x_dim,
+                                       diag_mode=self.diag_mode)
+            print(f"aux: {aux}")
+
+            print(f"ϕ_enc_Σ: {ϕ_enc_Σ}")
+            print(f"ϕ_gmm_Σ_k: {ϕ_gmm_Σ_k}")
+            print(f"ϕ_enc_Σ+ϕ_gmm_Σ_k: {ϕ_enc_Σ+ϕ_gmm_Σ_k}")
+            z_logits[:,k] = (ϕ_gmm_log_πs[k] + aux)
 
             # TODO: check if I'm being the smartest possible about these inverses
             # Repeated inverses? Also confirm the batch operations make sense
@@ -190,8 +210,8 @@ class DeepGMM(nn.Module):
         #z_samples = RelaxedOneHotCategoricalStraightThrough(temperature, logits=z_logits).rsample(n_samples)
 
         z_log_probs = F.log_softmax(z_logits, dim=-1)
-        print(f"z_logits: {z_logits}")
-        print(f"z_log_probs: {z_log_probs}")
+        #print(f"z_logits: {z_logits}")
+        #print(f"z_log_probs: {z_log_probs}")
 
 
         z_samples = RelaxedOneHotCategorical(temperature, probs=z_log_probs.exp()).rsample((n_samples,)).transpose(0, 1)
@@ -266,6 +286,9 @@ class DeepGMM(nn.Module):
         # hence minimize its reciprocal
         res =  -((loss1 + loss2 + loss3 + loss4).sum()/n_samples + loss5)
         #print(f"res: {res}")
+
+        assert res == res
+
         return res
 
 
