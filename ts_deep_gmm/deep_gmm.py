@@ -42,11 +42,11 @@ def mv_gaussian_log_prob(value, μ, Σ_diags, event_shape, debug=False):
 #       - Pros: has .paramers() method
 #       - Cons: can cause confusion? (no forward nor backward method)
 class DeepGMM(nn.Module):
-    def __init__(self, n_clusters, y_dim, x_dim, encoder, decoder, reg=0.01,
-                 diag_mode=False):
+    def __init__(self, n_clusters, y_dim, x_dim, gaussian_encoder, cat_encoder,
+                 decoder, reg=0.01):
         """
-            Note that Y are the observations (the data)
-            and X are the latent representations
+        Note that Y are the observations (the data)
+        and X are the latent representations
         """
         super(DeepGMM, self).__init__()
 
@@ -54,24 +54,11 @@ class DeepGMM(nn.Module):
         self.y_dim = y_dim
         self.x_dim = x_dim
         self.reg = reg
-        self.diag_mode = diag_mode
 
         ################# Recognition parameters #################
-        self.encoder = encoder # observ. -> latent (params)
+        self.gaussian_encoder = gaussian_encoder # observ. -> gaussian latent (params)
+        self.cat_encoder = cat_encoder # latent gauss -> latent categ. logits
 
-        self.ϕ_gmm_μs = torch.stack([
-            torch.randn(x_dim)
-            for _ in range(n_clusters)
-        ])
-
-        self.ϕ_gmm_Σ_diags = torch.stack([
-            torch.randn(x_dim)
-            for _ in range(n_clusters)
-        ])
-
-        # store in logits form because it's unconstrained,
-        # then use log_softmax to convert to log probabilities
-        self.ϕ_gmm_logits_πs = torch.randn(n_clusters)
         ##########################################################
 
         ################## Generative parameters #################
@@ -99,62 +86,23 @@ class DeepGMM(nn.Module):
         raise NotImplemented
 
     def _fit_step(self, Y, temperature, n_samples=10):
-        ϕ_enc_μ, ϕ_enc_Σ = self.encoder(Y)
+        ϕ_enc_μ, ϕ_enc_Σ_diags = self.gaussian_encoder(Y)
+
         N = Y.shape[0]
-        z_logits = torch.zeros((N, self.n_clusters), device=_DEVICE)
-        μ_tilde = torch.zeros((N, self.n_clusters, self.x_dim), device=_DEVICE)
-        Σ_tilde = torch.zeros((N, self.n_clusters, self.x_dim, self.x_dim), device=_DEVICE)
 
-        #inv_ϕ_enc_Σ = torch.inverse(ϕ_enc_Σ)
-        inv_ϕ_enc_Σ = 1/ϕ_enc_Σ
+        x_samples = (
+            MultivariateNormal(loc=ϕ_enc_μ,
+                               covariance_matrix=torch.diag_embed(ϕ_enc_Σ_diags))
+                .rsample((N, n_samples)) #TODO: check this
+        ).flatten(0, 1) # (N*n_samples, x_dim)
 
-        # TODO: do this without the loop? I think the question is how
-        # to deal with mv_gaussian_log_prob per cluster
-        # can I somehow map the loop iteration?
-        # EDIT: I think this is doable with flatten/view !!!
+        z_log_probs = F.log_softmax(self.cat_encoder(x_samples), dim=-1)
 
-        ϕ_gmm_log_πs = F.log_softmax(self.ϕ_gmm_logits_πs, dim=0)
+        z_samples = RelaxedOneHotCategorical(temperature, probs=z_log_probs.exp()).rsample().transpose(0, 1)
 
-        for k in range(self.n_clusters):
-            aux = mv_gaussian_log_prob(value=ϕ_enc_μ, μ=self.ϕ_gmm_μs[k],
-                                       Σ_diags=ϕ_enc_Σ+ϕ_gmm_Σ[k],
-                                       event_shape=self.x_dim)
-            z_logits[:,k] = (ϕ_gmm_log_πs[k] + aux)
-
-            # TODO: check if I'm being the smartest possible about these inverses
-            # Repeated inverses? Also confirm the batch operations make sense
-            #inv_ϕ_gmm_Σ = torch.inverse(ϕ_gmm_Σ[k])
-            inv_ϕ_gmm_Σ = 1/torch.inverse(ϕ_gmm_Σ[k])
-
-            #Σ_tilde[:,k,:,:] = torch.inverse(
-            Σ_tilde[:,k,:] = 1/(
-                inv_ϕ_enc_Σ + # one matrix per batch element (N, x_dim, x_dim)
-                inv_ϕ_gmm_Σ # one matrix per cluster (x_dim, x_dim)
-            )
-
-            #μ_tilde[:,k] = _batch_mv(Σ_tilde[:,k], (
-            μ_tilde[:,k] = (Σ_tilde[:,k] * (
-                #(inv_ϕ_enc_Σ.unsqueeze(0) @ ϕ_enc_μ.unsqueeze(-1)).squeeze() +
-                #(inv_ϕ_gmm_Σ @ self.ϕ_gmm_μs[k])
-                (inv_ϕ_enc_Σ.unsqueeze(0) * ϕ_enc_μ).squeeze() +
-                (inv_ϕ_gmm_Σ * self.ϕ_gmm_μs[k])
-            ))
-
-        # for each batch element, sample n_samples
-        # this results in a (N, n_samples, n_clusters) tensor: N*n_samples "pseudo one-hot" vectors
-
-        z_log_probs = F.log_softmax(z_logits, dim=-1)
-        z_samples = RelaxedOneHotCategorical(temperature, probs=z_log_probs.exp()).rsample((n_samples,)).transpose(0, 1)
-
-        # now use each "pseudo one-hot" vector to select which ϕ_tilde to use
-        _μ_tilde = torch.einsum("bsk,bkd->bsd", z_samples, μ_tilde)
-        _Σ_tilde = torch.einsum("bsk,bkdf->bsd", z_samples, Σ_tilde)
-
+       # now use each "pseudo one-hot" vector to select which ϕ_tilde to use
         _θ_gmm_μ = torch.einsum("bsk,kd->bsd", z_samples, self.θ_gmm_μs)
         _θ_gmm_Σ = torch.einsum("bsk,kdf->bsd", z_samples, self.θ_gmm_Σs)
-
-        _ϕ_gmm_μ = torch.einsum("bsk,kd->bsd", z_samples, self.ϕ_gmm_μs)
-        _ϕ_gmm_Σ = torch.einsum("bsk,kdf->bsd", z_samples, self.ϕ_gmm_Σs)
 
         x_samples = (
             MultivariateNormal(loc=_μ_tilde.flatten(0, 1),
@@ -165,50 +113,36 @@ class DeepGMM(nn.Module):
 
         μ_y, Σ_y = self.decoder(x_samples)
 
-        #μ_y = μ_y.view(100, 5, 2)
-        #Σ_y = Σ_y.view(100, 5, 2, 2)
-        #x_samples = x_samples.view(100, 5, 2)
-
-        # decoder NN part of the loss
+        # decoder NN part of the loss: log p(y | x, z)
         loss1 = mv_gaussian_log_prob(Y.unsqueeze(1).repeat(1, n_samples, 1).flatten(0, 1),
-                                   μ_y,
-                                   Σ_y,
-                                   self.y_dim,
-                                   self.diag_mode)
+                                     μ_y,
+                                     Σ_y,
+                                     self.y_dim)
 
-        # encoder NN part of the loss
-        loss2 = - mv_gaussian_log_prob(x_samples,
-                                         ϕ_enc_μ.unsqueeze(1).repeat(1, n_samples, 1).flatten(0, 1),
-                                         ϕ_enc_Σ.unsqueeze(1).repeat(1, n_samples, 1).flatten(0, 1),
-                                         self.x_dim,
-                                         self.diag_mode)
+        # encoder gauss NN part of the loss: log q(x | y)
+        loss2 = mv_gaussian_log_prob(x_samples,
+                                     ϕ_enc_μ.unsqueeze(1).repeat(1, n_samples, 1).flatten(0, 1),
+                                     ϕ_enc_Σ_diags.unsqueeze(1).repeat(1, n_samples, 1).flatten(0, 1),
+                                     self.x_dim)
 
-        # encoder GMM part of the loss
-        loss3 = (mv_gaussian_log_prob(x_samples,
-                                         _θ_gmm_μ.flatten(0, 1),
-                                         _θ_gmm_Σ.flatten(0, 1),
-                                         self.x_dim,
-                                         self.diag_mode) +
-                 (F.log_softmax(self.θ_gmm_logits_πs, dim=0) *
-                     z_samples.flatten(0, 1)).sum(dim=1))
+        # encoder categ NN part of the loss: -log q (z | x)
+        loss3 = -(z_log_probs.unsqueeze(1) * z_samples).flatten(0, 1)
 
-        # decoder GMM part of the loss
-        loss4 = -(mv_gaussian_log_prob(x_samples,
-                                         _ϕ_gmm_μ.flatten(0, 1),
-                                         _ϕ_gmm_Σ.flatten(0, 1),
-                                         self.x_dim,
-                                         self.diag_mode) +
-                  (z_log_probs.unsqueeze(1) * z_samples).flatten(0, 1).sum(dim=1))
-
-        loss5 = z_log_probs.exp().sum(dim=1).log().sum()
+        # decoder GMM part of the loss: log p(x | z) + log p(z)
+        loss4 = mv_gaussian_log_prob(x_samples,
+                                      _θ_gmm_μ.flatten(0, 1),
+                                      _θ_gmm_Σ.flatten(0, 1),
+                                      self.x_dim) +
+                  (F.log_softmax(self.θ_gmm_logits_πs, dim=0) *
+                     z_samples.flatten(0, 1)).sum(dim=1)
 
 
-        #for i, loss in enumerate([loss1, loss2, loss3, loss4, loss5]):
+        #for i, loss in enumerate([loss1, loss2, loss3, loss4]):
         #    print(f"loss_{i+1}: {loss}")
 
         # what's inside parens is the ELBO, and we want to maximize it,
         # hence minimize its reciprocal
-        res =  -((loss1 + loss2 + loss3 + loss4).sum()/n_samples + loss5)
+        res =  -((loss1 + loss2 + loss3 + loss4).sum()/n_samples)
 
         return res
 
