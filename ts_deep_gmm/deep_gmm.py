@@ -23,8 +23,8 @@ def mv_gaussian_log_prob(value, μ, Σ_diags, event_shape, debug=False):
     FOR DIAGONAL COV MATRICES ONLY
     """
     diff = value - μ
-    M = ((diff**2) / Σ_diags**2).sum(-1)
-    half_log_det = Σ_diags.log().sum(-1)
+    M = ((diff**2) / Σ_diags).sum(-1)
+    log_det = Σ_diags.log().sum(-1)
 
     if debug:
         print("###################################################################################")
@@ -33,9 +33,10 @@ def mv_gaussian_log_prob(value, μ, Σ_diags, event_shape, debug=False):
         print(f"mu: {μ}")
         print(f"half_log_det: {half_log_det}")
         print(f"diff**2: {diff**2}")
-        print(f"diags**2: {diags**2}")
+        print(f"diags**2: {Σ_diags**2}")
+        print("###################################################################################")
 
-    return -0.5 * (event_shape * math.log(2 * math.pi) + M) - half_log_det
+    return -0.5 * (event_shape * math.log(2 * math.pi) + M + log_det)
 
 
 # TODO: should DeepGMM be subclass of nn.Module?
@@ -65,12 +66,12 @@ class DeepGMM(nn.Module):
         self.decoder = decoder # latent var -> observ (params)
 
         self.θ_gmm_μs = torch.stack([
-            torch.randn(y_dim)
+            torch.randn(x_dim)
             for _ in range(n_clusters)
         ])
 
-        self.θ_gmm_Σ_diags = torch.stack([
-            torch.randn(y_dim)
+        self.θ_gmm_Σ_sqrt_diags = torch.stack([
+            torch.randn(x_dim)
             for _ in range(n_clusters)
         ])
 
@@ -93,23 +94,18 @@ class DeepGMM(nn.Module):
         x_samples = (
             MultivariateNormal(loc=ϕ_enc_μ,
                                covariance_matrix=torch.diag_embed(ϕ_enc_Σ_diags))
-                .rsample((N, n_samples)) #TODO: check this
-        ).flatten(0, 1) # (N*n_samples, x_dim)
+                .rsample((n_samples,)).transpose(0, 1)#TODO: check this
+        ).flatten(0, 1)
 
-        z_log_probs = F.log_softmax(self.cat_encoder(x_samples), dim=-1)
+        z_log_probs = self.cat_encoder(x_samples)
+        z_samples = RelaxedOneHotCategorical(temperature, probs=z_log_probs.exp()).rsample()
 
-        z_samples = RelaxedOneHotCategorical(temperature, probs=z_log_probs.exp()).rsample().transpose(0, 1)
+        # use the pseudo-one-hot vectors to select the parameters of each sample
+        _θ_gmm_μ = (z_samples.unsqueeze(-1) * self.θ_gmm_μs).sum(dim=1)
+        _θ_gmm_Σ = (z_samples.unsqueeze(-1) * self.θ_gmm_Σ_sqrt_diags).sum(dim=1) ** 2
 
-       # now use each "pseudo one-hot" vector to select which ϕ_tilde to use
-        _θ_gmm_μ = torch.einsum("bsk,kd->bsd", z_samples, self.θ_gmm_μs)
-        _θ_gmm_Σ = torch.einsum("bsk,kdf->bsd", z_samples, self.θ_gmm_Σs)
-
-        x_samples = (
-            MultivariateNormal(loc=_μ_tilde.flatten(0, 1),
-                               covariance_matrix=torch.diag_embed(_Σ_tilde.flatten(0, 1)))
-                .rsample()
-                #.view(100, 5, 2)
-        )
+        #_θ_gmm_μ = torch.einsum("bsk,kd->bsd", z_samples, self.θ_gmm_μs)
+        #_θ_gmm_Σ = torch.einsum("bsk,kdf->bsd", z_samples, self.θ_gmm_Σs)
 
         μ_y, Σ_y = self.decoder(x_samples)
 
@@ -126,19 +122,15 @@ class DeepGMM(nn.Module):
                                      self.x_dim)
 
         # encoder categ NN part of the loss: -log q (z | x)
-        loss3 = -(z_log_probs.unsqueeze(1) * z_samples).flatten(0, 1)
+        loss3 = -(z_samples * z_log_probs).sum(dim=1)
 
         # decoder GMM part of the loss: log p(x | z) + log p(z)
-        loss4 = mv_gaussian_log_prob(x_samples,
-                                      _θ_gmm_μ.flatten(0, 1),
-                                      _θ_gmm_Σ.flatten(0, 1),
-                                      self.x_dim) +
-                  (F.log_softmax(self.θ_gmm_logits_πs, dim=0) *
-                     z_samples.flatten(0, 1)).sum(dim=1)
-
-
-        #for i, loss in enumerate([loss1, loss2, loss3, loss4]):
-        #    print(f"loss_{i+1}: {loss}")
+        loss4 = (mv_gaussian_log_prob(x_samples,
+                                       _θ_gmm_μ,
+                                       _θ_gmm_Σ,
+                                       self.x_dim, debug=False) +
+                 (z_samples * F.log_softmax(self.θ_gmm_logits_πs, dim=0)).sum(dim=1))
+                     
 
         # what's inside parens is the ELBO, and we want to maximize it,
         # hence minimize its reciprocal
@@ -189,16 +181,12 @@ class DeepGMM(nn.Module):
                 loss = self._fit_step(yb, temperature, n_samples)
                 losses.append((epoch, i, loss.item()))
                 if debug != 0:
-                    if loss != loss:
-                        get_dot = register_hooks(loss)
+                    get_dot = register_hooks(loss)
 
                 loss.backward()
                 if debug != 0:
                     debug_str = ""
                     print_me = False
-
-                    print(self.θ_gmm_Σs)
-                    print(self.ϕ_gmm_Σs)
 
                     if (epoch * bs + i) < debug:
                         debug_str += (f"################### debug iter {(epoch * bs + i)} #####################\n")
