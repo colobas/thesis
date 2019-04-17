@@ -14,15 +14,19 @@ class gaussianMLP(nn.Module):
         """
         super(gaussianMLP, self).__init__()
 
-        self.hidden = nn.Linear(x_dim, z_dim)
+        self.hidden1 = nn.Linear(x_dim, h_dim)
+        self.hidden2 = nn.Linear(h_dim, h_dim)
         self.mu_weights = nn.Linear(h_dim, z_dim)
         self.cov_diag_weights = nn.Linear(h_dim, z_dim)
         self.reg = reg
 
     def forward(self, x):
-        x = self.hidden(x)
+        x = self.hidden1(x)
+        x = F.relu(x)
+        x = self.hidden2(x)
         x = F.relu(x)
         mu = self.mu_weights(x)
+        x = F.relu(x)
         cov_diag = F.relu(self.cov_diag_weights(x)).clamp(max=10) + self.reg # diag has to be positive
 
         return mu, cov_diag
