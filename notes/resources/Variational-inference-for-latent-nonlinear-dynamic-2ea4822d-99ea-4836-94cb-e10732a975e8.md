@@ -1,0 +1,5 @@
+# Variational inference for latent nonlinear dynamics
+
+Attachment: https://17a11ed1-a-62cb3a1a-s-sites.googlegroups.com/site/nipsts2017/NIPS_2017_TSW_paper_36.pdf?attachauth=ANoY7coNuLz_XQC3c_Xnbrgs1uhJxUhhqD0zQ8z7Uzm9wr2bgm1HhU0AV9_UUvFgEHVDxnk9RmITz1aha747Fn8RMKI1-FEABSJdPfwgw-iLQAzj0u5vmA6UHEI_gztadFeqDzuknLMSgT70mgkT8l2YFv0zmxxGGYFHolffzY_IYEup1Yw3JBlj_b8JCE5I3tQIu7szw_PYMAv_-tcHVS6-Ft3CUa4kDJXsthg4mQtpi8jRuKpPGZo%3D&attredirects=3
+Subtask: different but inference might be useful
+

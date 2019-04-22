@@ -1,0 +1,17 @@
+﻿Name,Attachment,Status,Subtask,destination
+Scaling Factorial Hidden Markov Models: Stochastic Variational Inference without Messages,http://papers.nips.cc/paper/6534-scaling-factorial-hidden-markov-models-stochastic-variational-inference-without-messages.pdf,,different but inference might be useful,
+Switching Linear Dynamics for Variational Bayes Filtering,https://openreview.net/pdf?id=B1MbDj0ctQ,,different but inference might be useful,
+Variational Inference on Deep Exponential Family by using Variational Inferences on Conjugate Models,http://bayesiandeeplearning.org/2016/papers/BDL_26.pdf,,different but inference might be useful,
+Variational inference for latent nonlinear dynamics,https://17a11ed1-a-62cb3a1a-s-sites.googlegroups.com/site/nipsts2017/NIPS_2017_TSW_paper_36.pdf?attachauth=ANoY7coNuLz_XQC3c_Xnbrgs1uhJxUhhqD0zQ8z7Uzm9wr2bgm1HhU0AV9_UUvFgEHVDxnk9RmITz1aha747Fn8RMKI1-FEABSJdPfwgw-iLQAzj0u5vmA6UHEI_gztadFeqDzuknLMSgT70mgkT8l2YFv0zmxxGGYFHolffzY_IYEup1Yw3JBlj_b8JCE5I3tQIu7szw_PYMAv_-tcHVS6-Ft3CUa4kDJXsthg4mQtpi8jRuKpPGZo%3D&attredirects=3,,different but inference might be useful,
+A Disentangled Recognition and Nonlinear Dynamics Model for Unsupervised Learning,http://papers.nips.cc/paper/6951-a-disentangled-recognition-and-nonlinear-dynamics-model-for-unsupervised-learning.pdf,,different but inference might be useful,
+Variational Joint Filtering,https://arxiv.org/pdf/1707.09049v3.pdf,,different but inference might be useful,
+Natural-Gradient Stochastic Variational Inference for Non-Conjugate Structured Variational Autoencoder,https://deepstruct.github.io/ICML17/1stDeepStructWS_paper_10.pdf,,extensions,
+Variational Message Passing with Structured Inference Networks,https://openreview.net/forum?id=HyH9lbZAW,,extensions,
+EP SVAE,http://approximateinference.org/2018/accepted/SoEtAl2018.pdf,,extensions,
+Conjugate-Computation Variational Inference : Converting Variational Inference in Non-Conjugate Models to Inferences in Conjugate Models,https://arxiv.org/pdf/1703.04265.pdf,,extensions,
+Fraccaro PhD Thesis,http://orbit.dtu.dk/portal/en/publications/id(46a86abc-2eba-4106-bc55-cc7cafc295a8).html,,just for reference,
+Composing graphical models with neural networks for structured representation and fast inference,,,,
+Discovering Relational Covariance Structures for Explaining Multiple Time Series,,Processed,,just-for-reference
+CASC: Context-Aware Segmentation and Clustering for Motif Discovery in Noisy Time Series Data,,Processed,,just-for-reference
+Foundations of Sequence-to-Sequence Modeling for Time Series,,Processed,,just-for-reference
+Introduction to MCMC for DL,,Processed,,tutorials
