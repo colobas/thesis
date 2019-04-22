@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class gaussianMLP(nn.Module):
-    def __init__(self, x_dim, z_dim, h_dim, reg=0.01):
+    def __init__(self, x_dim, z_dim, h_dim, n_hidden=4, reg=0.01):
         """
         DON'T CONFUSE THE VARIABLE NAMES USED HERE WITH THE ONES
         FROM THE PAPER/MODEL
@@ -14,17 +14,19 @@ class gaussianMLP(nn.Module):
         """
         super(gaussianMLP, self).__init__()
 
-        self.hidden1 = nn.Linear(x_dim, h_dim)
-        self.hidden2 = nn.Linear(h_dim, h_dim)
+        self.in_layer = nn.Linear(x_dim, h_dim)
+        self.hidden = [nn.Linear(h_dim, h_dim) for _ in range(n_hidden)]
         self.mu_weights = nn.Linear(h_dim, z_dim)
         self.cov_diag_weights = nn.Linear(h_dim, z_dim)
         self.reg = reg
 
     def forward(self, x):
-        x = self.hidden1(x)
+        x = self.in_layer(x)
         x = F.relu(x)
-        x = self.hidden2(x)
-        x = F.relu(x)
+        for hid in self.hidden:
+            x = hid(x)
+            x = F.relu(x)
+
         mu = self.mu_weights(x)
         x = F.relu(x)
         cov_diag = F.relu(self.cov_diag_weights(x)).clamp(max=10) + self.reg # diag has to be positive
@@ -32,7 +34,7 @@ class gaussianMLP(nn.Module):
         return mu, cov_diag
 
 class categMLP(nn.Module):
-    def __init__(self, x_dim, z_dim, h_dim):
+    def __init__(self, x_dim, z_dim, h_dim, n_hidden=4):
         """
         DON'T CONFUSE THE VARIABLE NAMES USED HERE WITH THE ONES
         FROM THE PAPER/MODEL
@@ -43,14 +45,18 @@ class categMLP(nn.Module):
         """
         super(categMLP, self).__init__()
 
-        self.hidden1 = nn.Linear(x_dim, h_dim)
-        self.hidden2 = nn.Linear(h_dim, z_dim)
+        self.in_layer = nn.Linear(x_dim, h_dim)
+        self.hidden = [nn.Linear(h_dim, h_dim) for _ in range(n_hidden)]
+        self.out_layer = nn.Linear(h_dim, z_dim)
 
 
     def forward(self, x):
-        x = self.hidden1(x)
+        x = self.in_layer(x)
         x = F.relu(x)
-        x = self.hidden2(x)
+        for hid in self.hidden:
+            x = hid(x)
+            x = F.relu(x)
+        x = self.out_layer(x)
         x = F.log_softmax(x, dim=-1)
         return x
 

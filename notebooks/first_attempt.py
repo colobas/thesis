@@ -7,9 +7,11 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
+from torch.distributions import MultivariateNormal, Categorical
 
 from ts_deep_gmm import DeepGMM
 from ts_deep_gmm.utils import gaussianMLP, categMLP
+
 
 #use_cuda = torch.cuda.is_available()
 #_DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu") 
@@ -40,7 +42,7 @@ def make_pinwheel_data(radial_std, tangential_std, num_classes, num_per_class, r
 
 
 # %%
-data, labels = make_pinwheel_data(0.3, 0.05, 3, 1000, 0.25)
+data, labels = make_pinwheel_data(0.3, 0.05, 3, 10000, 0.25)
 
 if False:
     plt.figure(figsize=(10, 10))
@@ -75,12 +77,12 @@ else:
 losses = model.fit(
     data,
     temperature_schedule=None, # use default
-    n_epochs=50,
-    bs=50,
+    n_epochs=500,
+    bs=200,
     #opt=optim.Adam(model.parameters(), lr=0.001, momentum=0.0),
-    opt=optim.RMSprop(model.parameters()),
-    n_samples=5,
-    verbose=True,
+    opt=optim.RMSprop(model.parameters(), lr=0.0001),
+    n_samples=50,
+    verbose=False,
     debug=0,
     clip_grad=1e2,
 )
@@ -111,3 +113,32 @@ plt.scatter(grid[:, 0], grid[:, 1], c=label, s=proba.max(dim=1)[0].detach().nump
 plt.show()
 
 # %%
+
+print(f"""
+
+    model.θ_gmm_μs: {model.θ_gmm_μs}
+
+
+    model.θ_gmm_Σs: {model.θ_gmm_Σ_diags}
+
+
+    model.θ_gmm_πs: {model.θ_gmm_πs}
+
+""")
+
+
+z_samples = torch.zeros(1000)
+x_samples = torch.zeros(1000, x_dim)
+for i in range(1000):
+    k = Categorical(probs=model.θ_gmm_πs).sample().item()
+    z_samples[i] = k
+    x_samples[i] = (
+            MultivariateNormal(loc=model.θ_gmm_μs[k],
+                       covariance_matrix=torch.diag_embed(model.θ_gmm_Σ_diags[k]))
+    ).sample()
+
+
+plt.scatter(x_samples.numpy()[:, 0], x_samples.numpy()[:, 1], s=5, c=z_samples.numpy())
+plt.show()
+
+

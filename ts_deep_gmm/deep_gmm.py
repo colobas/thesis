@@ -1,3 +1,4 @@
+import sys
 import math
 
 import torch
@@ -61,7 +62,7 @@ class DeepGMM(nn.Module):
             for _ in range(n_clusters)
         ])
 
-        self.θ_gmm_Σ_sqrt_diags = torch.stack([
+        self.θ_gmm_Σ_diags = torch.stack([
             torch.randn(x_dim)
             for _ in range(n_clusters)
         ])
@@ -114,17 +115,17 @@ class DeepGMM(nn.Module):
         for k in range(self.n_clusters):
             self.θ_gmm_μs[k] = ((sel(z_samples, k) * x_samples).sum(dim=0) / norm(z_samples, k)).detach()
 
-            self.θ_gmm_Σ_sqrt_diags[k] = (
+            self.θ_gmm_Σ_diags[k] = (
                 (sel(z_samples, k) * (x_samples ** 2)).sum(dim=0) / norm(z_samples, k) +
                 -2 * (self.θ_gmm_μs[k] * (sel(z_samples, k) * x_samples)).sum(dim=0) / norm(z_samples, k) +
                 self.θ_gmm_μs[k] ** 2 +
                 self.reg
-            ).detach()
+            ).sqrt().detach()
 
             self.θ_gmm_πs[k] = z_samples[k].mean().detach()
 
         _θ_gmm_μ = (z_samples.unsqueeze(-1) * self.θ_gmm_μs).sum(dim=1)
-        _θ_gmm_Σ = (z_samples.unsqueeze(-1) * self.θ_gmm_Σ_sqrt_diags).sum(dim=1) ** 2 
+        _θ_gmm_Σ = (z_samples.unsqueeze(-1) * self.θ_gmm_Σ_diags).sum(dim=1)
 
         #_θ_gmm_μ = torch.einsum("bsk,kd->bsd", z_samples, self.θ_gmm_μs)
         #_θ_gmm_Σ = torch.einsum("bsk,kdf->bsd", z_samples, self.θ_gmm_Σs)
@@ -154,8 +155,12 @@ class DeepGMM(nn.Module):
                  (z_samples * self.θ_gmm_πs.log()).sum(dim=1))
 
 
-#        for i, loss in enumerate([loss1, loss2, loss3, loss4]):
-#            print(f"loss{i+1}: {loss.sum()}")
+        for i, loss in enumerate([loss1, loss2, loss3, loss4]):
+            sys.stdout.write("\033[F")
+            sys.stdout.write("\033[K")
+
+        for i, loss in enumerate([loss1, loss2, loss3, loss4]):
+            print(f"loss{i+1}: {loss.sum()}")
 
         # what's inside parens is the ELBO, and we want to maximize it,
         # hence minimize its reciprocal
