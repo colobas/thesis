@@ -1,4 +1,3 @@
-import sys
 import math
 
 import torch
@@ -18,7 +17,7 @@ from ts_deep_gmm.utils.bad_grad_viz import register_hooks
 
 _DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu") 
 
-def mv_gaussian_log_prob(value, μ, Σ_diags, event_shape, debug=False):
+def mv_gaussian_log_prob(value, μ, Σ_diags, event_shape):
     """
     Adapted from https://github.com/pytorch/pytorch/blob/master/torch/distributions/multivariate_normal.py
     FOR DIAGONAL COV MATRICES ONLY
@@ -136,7 +135,7 @@ class DeepGMM(nn.Module):
         loss1 = mv_gaussian_log_prob(Y.unsqueeze(1).repeat(1, n_samples, 1).flatten(0, 1),
                                      μ_y,
                                      Σ_y,
-                                     self.y_dim, debug=True)
+                                     self.y_dim)
 
         # encoder gauss NN part of the loss: log q(x | y)
         loss2 = -mv_gaussian_log_prob(x_samples,
@@ -154,14 +153,6 @@ class DeepGMM(nn.Module):
                                        self.x_dim) +
                  (z_samples * self.θ_gmm_πs.log()).sum(dim=1))
 
-
-        for i, loss in enumerate([loss1, loss2, loss3, loss4]):
-            sys.stdout.write("\033[F")
-            sys.stdout.write("\033[K")
-
-        for i, loss in enumerate([loss1, loss2, loss3, loss4]):
-            print(f"loss{i+1}: {loss.sum()}")
-
         # what's inside parens is the ELBO, and we want to maximize it,
         # hence minimize its reciprocal
         res = -((loss1 + loss2 + loss3 + loss4).sum()/n_samples)
@@ -171,7 +162,7 @@ class DeepGMM(nn.Module):
 
 
     def fit(self, Y, temperature_schedule=None, n_epochs=1, bs=100, opt=None,
-            n_samples=10, clip_grad=None, verbose=False, debug=False, callback=None):
+            n_samples=10, clip_grad=None, verbose=False, callback=None):
 
         # TODO: implement default values
 
@@ -213,31 +204,10 @@ class DeepGMM(nn.Module):
 
                 loss = self._fit_step(yb, temperature, n_samples)
                 losses.append((epoch, start_i, loss.item()))
-                if debug != 0:
-                    get_dot = register_hooks(loss)
-
                 loss.backward()
+
                 if clip_grad is not None:
                     torch.nn.utils.clip_grad_norm_(self.parameters(), clip_grad)
-
-                if debug != 0:
-                    debug_str = ""
-                    print_me = True
-
-                    if (epoch * bs + i) < debug:
-                        debug_str += (f"################### debug iter {(epoch * bs + i)} #####################\n")
-                        for n, p in self.named_parameters():
-                            grad_mean = p.grad.mean()
-                            debug_str += (f"{n}: {p.grad.mean()}\n")
-                            if grad_mean != grad_mean:
-                                print_me = True
-                        debug_str += "\n"
-                        dot = get_dot() 
-                        dot.render(f"iter_{i}", format="pdf")
-                        if print_me:
-                            print(debug_str)
-                    else:
-                        assert False
 
                 opt.step()
                 opt.zero_grad()
