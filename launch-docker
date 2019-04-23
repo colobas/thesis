@@ -1,0 +1,4 @@
+#!/usr/bin/bash
+
+optirun -b primus sudo nvidia-docker run -it -v $(pwd):/workspace/thesis colobas/thesis \
+  /bin/bash -c "cd thesis && pip install -e . && /bin/bash"
