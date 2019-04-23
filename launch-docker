@@ -14,7 +14,12 @@ optirun -b primus sudo nvidia-docker run -it \
     -p 6006:6006 \
     colobas/thesis \
     /bin/bash -c "\
-    tensorboard --logdir tensorboard_logs & \
     cd thesis && \
     pip install -e . && \
-    /bin/bash"
+    tmux -2 new-session -d -s thesis && \
+    tmux new-window -t thesis:1 -n 'tensorboard' && \
+    tmux select-window -t thesis:1 && \
+    tmux send-keys 'cd ..' C-m && \
+    tmux send-keys 'tensorboard --logdir tensorboard_logs' C-m  && \
+    tmux select-window -t thesis:0 && \
+    /bin/bash -c 'tmux a -t thesis'"

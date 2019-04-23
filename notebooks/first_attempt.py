@@ -12,6 +12,7 @@ from torch.distributions import MultivariateNormal, Categorical
 from ts_deep_gmm import DeepGMM
 from ts_deep_gmm.utils import gaussianMLP, categMLP
 
+from tensorboardX import SummaryWriter
 
 #use_cuda = torch.cuda.is_available()
 #_DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu") 
@@ -74,7 +75,7 @@ else:
 
 # %%
 
-losses = model.fit(
+model.fit(
     data,
     temperature_schedule=None, # use default
     n_epochs=500,
@@ -82,18 +83,14 @@ losses = model.fit(
     #opt=optim.Adam(model.parameters(), lr=0.001, momentum=0.0),
     opt=optim.RMSprop(model.parameters(), lr=0.0001),
     n_samples=50,
-    verbose=False,
-    debug=0,
+    verbose=True,
     clip_grad=1e2,
+    writer=SummaryWriter("/workspace/tensorboard_logs/")
 )
 
+# %%
+
 X, Z = model.predict(data)
-
-xx = list(map(lambda t: t[0]*len(data) + t[1], losses))
-yy = np.log(list(map(lambda t: t[2], losses)))
-
-plt.plot(xx, yy)
-plt.show()
 
 x_min = np.min(data.numpy()[:, 0])
 x_max = np.max(data.numpy()[:, 0])

@@ -10,6 +10,7 @@ from torch.autograd import gradcheck, Variable
 #from pyro.distributions.relaxed_straight_through import RelaxedOneHotCategoricalStraightThrough
 from torch.distributions.multivariate_normal import _batch_mahalanobis, _batch_diag, _batch_mv
 from torch.distributions import RelaxedOneHotCategorical, MultivariateNormal, Uniform
+from tensorboardX import SummaryWriter
 
 from tqdm import trange
 
@@ -157,12 +158,17 @@ class DeepGMM(nn.Module):
         # hence minimize its reciprocal
         res = -((loss1 + loss2 + loss3 + loss4).sum()/n_samples)
 
-        return res
 
-
+        return (
+            res,
+            -loss1.sum()/n_samples,
+            -loss2.sum()/n_samples,
+            -loss3.sum()/n_samples,
+            -loss4.sum()/n_samples,
+        )
 
     def fit(self, Y, temperature_schedule=None, n_epochs=1, bs=100, opt=None,
-            n_samples=10, clip_grad=None, verbose=False, callback=None):
+            n_samples=10, clip_grad=None, verbose=False, writer=None):
 
         # TODO: implement default values
 
@@ -183,8 +189,6 @@ class DeepGMM(nn.Module):
             # TODO: better defaults
             opt = optim.SGD(self.parameters(), lr=0.01, momentum=0.0)
 
-        losses = []
-
         if verbose:
             epochs = trange(n_epochs, desc="epoch")
         else:
@@ -202,8 +206,18 @@ class DeepGMM(nn.Module):
 
                 temperature = temperature_schedule(epoch, start_i, len(Y))
 
-                loss = self._fit_step(yb, temperature, n_samples)
-                losses.append((epoch, start_i, loss.item()))
+                loss, loss1, loss2, loss3, loss4 = self._fit_step(yb, temperature, n_samples)
+
+                # if we're writing to tensorboard
+                if writer is not None:
+                    n_iter = epoch*len(Y) + start_i
+                    if n_iter % 10 == 0:
+                        writer.add_scalar('losses/loss1', loss1, n_iter)
+                        writer.add_scalar('losses/loss2', loss2, n_iter)
+                        writer.add_scalar('losses/loss3', loss3, n_iter)
+                        writer.add_scalar('losses/loss4', loss4, n_iter)
+                        writer.add_scalar('losses/total_loss', loss, n_iter)
+
                 loss.backward()
 
                 if clip_grad is not None:
@@ -211,7 +225,5 @@ class DeepGMM(nn.Module):
 
                 opt.step()
                 opt.zero_grad()
-                if callback is not None:
-                    callback
 
         return losses
