@@ -1,4 +1,20 @@
 #!/usr/bin/bash
 
-optirun -b primus sudo nvidia-docker run -it -v $(pwd):/workspace/thesis colobas/thesis \
-  /bin/bash -c "cd thesis && pip install -e . && /bin/bash"
+if [ "$#" -ne 2 ]; then
+    PKG_FOLDER=/home/colobas/dev/guilhermepires-thesis
+    TENSORBOARD_LOGS_FOLDER=/home/colobas/dev/tensorboard_logs
+else
+    PKG_FOLDER=$1
+    TENSORBOARD_LOGS_FOLDER=$2
+fi
+
+optirun -b primus sudo nvidia-docker run -it \
+    -v $PKG_FOLDER:/workspace/thesis \
+    -v $TENSORBOARD_LOGS_FOLDER:/workspace/tensorboard_logs\
+    -p 6006:6006 \
+    colobas/thesis \
+    /bin/bash -c "\
+    tensorboard --logdir tensorboard_logs & \
+    cd thesis && \
+    pip install -e . && \
+    /bin/bash"
