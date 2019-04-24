@@ -15,7 +15,7 @@ class gaussianMLP(nn.Module):
         super(gaussianMLP, self).__init__()
 
         self.in_layer = nn.Linear(x_dim, h_dim)
-        self.hidden = [nn.Linear(h_dim, h_dim) for _ in range(n_hidden)]
+        self.hidden = nn.ModuleList([nn.Linear(h_dim, h_dim) for _ in range(n_hidden)])
         self.mu_weights = nn.Linear(h_dim, z_dim)
         self.cov_diag_weights = nn.Linear(h_dim, z_dim)
         self.reg = reg
@@ -46,7 +46,7 @@ class categMLP(nn.Module):
         super(categMLP, self).__init__()
 
         self.in_layer = nn.Linear(x_dim, h_dim)
-        self.hidden = [nn.Linear(h_dim, h_dim) for _ in range(n_hidden)]
+        self.hidden = nn.ModuleList([nn.Linear(h_dim, h_dim) for _ in range(n_hidden)])
         self.out_layer = nn.Linear(h_dim, z_dim)
 
 

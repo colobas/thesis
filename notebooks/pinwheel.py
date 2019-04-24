@@ -14,10 +14,8 @@ from ts_deep_gmm.utils import gaussianMLP, categMLP
 
 from tensorboardX import SummaryWriter
 
-#use_cuda = torch.cuda.is_available()
-#_DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu") 
-_DEVICE = "cpu"
-use_cuda = False
+use_cuda = torch.cuda.is_available()
+_DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu") 
 
 # %%
 def make_pinwheel_data(radial_std, tangential_std, num_classes, num_per_class, rate):
@@ -57,28 +55,36 @@ h_dim_enc = 2
 h_dim_dec = 2
 n_clusters = 3
 
-model = DeepGMM(
-    n_clusters=n_clusters,
-    y_dim=y_dim,
-    x_dim=x_dim,
-    gaussian_encoder=gaussianMLP(y_dim, x_dim, h_dim_enc),
-    cat_encoder=categMLP(x_dim, n_clusters, x_dim),
-    decoder=gaussianMLP(x_dim, y_dim, h_dim_dec),
-)
 
 if use_cuda:
-    model = model.cuda()
+    model = DeepGMM(
+        n_clusters=n_clusters,
+        y_dim=y_dim,
+        x_dim=x_dim,
+        gaussian_encoder=gaussianMLP(y_dim, x_dim, h_dim_enc).cuda(),
+        cat_encoder=categMLP(x_dim, n_clusters, x_dim).cuda(),
+        decoder=gaussianMLP(x_dim, y_dim, h_dim_dec).cuda(),
+    ).cuda()
     data = torch.Tensor(data).cuda()
     print("using cuda")
 else:
+    model = DeepGMM(
+        n_clusters=n_clusters,
+        y_dim=y_dim,
+        x_dim=x_dim,
+        gaussian_encoder=gaussianMLP(y_dim, x_dim, h_dim_enc),
+        cat_encoder=categMLP(x_dim, n_clusters, x_dim),
+        decoder=gaussianMLP(x_dim, y_dim, h_dim_dec),
+    )
     data = torch.Tensor(data)
 
 # %%
 
+
 model.fit(
     data,
     temperature_schedule=None, # use default
-    n_epochs=500,
+    n_epochs=10,
     bs=200,
     #opt=optim.Adam(model.parameters(), lr=0.001, momentum=0.0),
     opt=optim.RMSprop(model.parameters(), lr=0.0001),
@@ -91,6 +97,9 @@ model.fit(
 # %%
 
 X, Z = model.predict(data)
+
+if use_cuda:
+    data = data.cpu()
 
 x_min = np.min(data.numpy()[:, 0])
 x_max = np.max(data.numpy()[:, 0])

@@ -58,18 +58,18 @@ class DeepGMM(nn.Module):
         self.decoder = decoder # latent var -> observ (params)
 
         self.θ_gmm_μs = torch.stack([
-            torch.randn(x_dim)
+            torch.randn(x_dim, device=_DEVICE)
             for _ in range(n_clusters)
         ])
 
         self.θ_gmm_Σ_diags = torch.stack([
-            torch.randn(x_dim)
+            torch.randn(x_dim, device=_DEVICE)
             for _ in range(n_clusters)
         ])
 
         # store in logits form because it's unconstrained,
         # then use log_softmax to convert to log probabilities
-        self.θ_gmm_πs = torch.rand(n_clusters)
+        self.θ_gmm_πs = torch.rand(n_clusters, device=_DEVICE)
         ##########################################################
 
     def predict(self, Y):
@@ -225,5 +225,3 @@ class DeepGMM(nn.Module):
 
                 opt.step()
                 opt.zero_grad()
-
-        return losses
