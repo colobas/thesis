@@ -8,9 +8,12 @@ else
     TENSORBOARD_LOGS_FOLDER=$2
 fi
 
-optirun -b primus sudo nvidia-docker run -it \
+xhost +
+optirun -b primus sudo nvidia-docker run -it --rm \
     -v $PKG_FOLDER:/workspace/thesis \
-    -v $TENSORBOARD_LOGS_FOLDER:/workspace/tensorboard_logs\
+    -v $TENSORBOARD_LOGS_FOLDER:/workspace/runs\
+    -v /tmp/.X11-unix:/tmp/.X11-unix \
+    -e DISPLAY=$DISPLAY \
     -p 6006:6006 \
     colobas/thesis \
     /bin/bash -c "\
@@ -20,6 +23,8 @@ optirun -b primus sudo nvidia-docker run -it \
     tmux new-window -t thesis:1 -n 'tensorboard' && \
     tmux select-window -t thesis:1 && \
     tmux send-keys 'cd ..' C-m && \
-    tmux send-keys 'tensorboard --logdir tensorboard_logs' C-m  && \
+    tmux send-keys 'tensorboard --logdir runs' C-m  && \
     tmux select-window -t thesis:0 && \
+
     /bin/bash -c 'tmux a -t thesis'"
+xhost -
