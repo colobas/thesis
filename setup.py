@@ -6,5 +6,5 @@ setup(name='guilhermepires-thesis',
       author='Guilherme Pires',
       author_email='mail@gpir.es',
       license='MIT',
-      packages=['ts_deep_gmm'],
+      packages=['deep_gmm', 'po_hmm'],
       zip_safe=False)
