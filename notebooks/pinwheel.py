@@ -1,7 +1,10 @@
+# -*- coding: utf-8 -*-
+
 # %%
 import itertools
 import numpy as np
 import matplotlib.pyplot as plt
+import datetime
 
 import torch
 import torch.nn as nn
@@ -16,6 +19,8 @@ from tensorboardX import SummaryWriter
 
 use_cuda = torch.cuda.is_available()
 _DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu") 
+
+now_str = lambda : str(datetime.datetime.now()).replace(" ", "__")
 
 # %%
 def make_pinwheel_data(radial_std, tangential_std, num_classes, num_per_class, rate):
@@ -61,9 +66,9 @@ if use_cuda:
         n_clusters=n_clusters,
         y_dim=y_dim,
         x_dim=x_dim,
-        gaussian_encoder=gaussianMLP(y_dim, x_dim, h_dim_enc).cuda(),
-        cat_encoder=categMLP(x_dim, n_clusters, x_dim).cuda(),
-        decoder=gaussianMLP(x_dim, y_dim, h_dim_dec).cuda(),
+        gaussian_encoder=gaussianMLP(y_dim, x_dim, h_dim_enc, n_hidden=4).cuda(),
+        cat_encoder=categMLP(x_dim, n_clusters, x_dim, n_hidden=4).cuda(),
+        decoder=gaussianMLP(x_dim, y_dim, h_dim_dec, n_hidden=2).cuda(),
     ).cuda()
     data = torch.Tensor(data).cuda()
     print("using cuda")
@@ -72,9 +77,9 @@ else:
         n_clusters=n_clusters,
         y_dim=y_dim,
         x_dim=x_dim,
-        gaussian_encoder=gaussianMLP(y_dim, x_dim, h_dim_enc),
-        cat_encoder=categMLP(x_dim, n_clusters, x_dim),
-        decoder=gaussianMLP(x_dim, y_dim, h_dim_dec),
+        gaussian_encoder=gaussianMLP(y_dim, x_dim, h_dim_enc, n_hidden=4),
+        cat_encoder=categMLP(x_dim, n_clusters, x_dim, n_hidden=4),
+        decoder=gaussianMLP(x_dim, y_dim, h_dim_dec, n_hidden=2),
     )
     data = torch.Tensor(data)
 
@@ -84,14 +89,14 @@ else:
 model.fit(
     data,
     temperature_schedule=None, # use default
-    n_epochs=10,
-    bs=200,
+    n_epochs=100,
+    bs=1000,
     #opt=optim.Adam(model.parameters(), lr=0.001, momentum=0.0),
-    opt=optim.RMSprop(model.parameters(), lr=0.0001),
-    n_samples=50,
+    opt=optim.RMSprop(model.parameters(), lr=0.001),
+    n_samples=200,
     verbose=True,
-    clip_grad=1e2,
-    writer=SummaryWriter("/workspace/tensorboard_logs/")
+    clip_grad=1e3,
+    writer=SummaryWriter(f"/workspace/runs/{now_str()}")
 )
 
 # %%
@@ -100,6 +105,7 @@ X, Z = model.predict(data)
 
 if use_cuda:
     data = data.cpu()
+    Z = Z.cpu()
 
 x_min = np.min(data.numpy()[:, 0])
 x_max = np.max(data.numpy()[:, 0])
@@ -111,7 +117,11 @@ yy = np.linspace(y_min, y_max, 100)
 
 grid = np.array(list(itertools.product(xx, yy)))
 
-proba = model.predict_proba(torch.Tensor(grid))
+if use_cuda:
+    proba = model.predict_proba(torch.Tensor(grid).cuda()).cpu()
+else:
+    proba = model.predict_proba(torch.Tensor(grid))
+
 label = proba.argmax(dim=1).detach().numpy()
 
 plt.scatter(data.numpy()[:,0], data.numpy()[:,1], c=Z.numpy(), s=5)
@@ -122,13 +132,13 @@ plt.show()
 
 print(f"""
 
-    model.θ_gmm_μs: {model.θ_gmm_μs}
+    model.theta_gmm_mus: {model.θ_gmm_μs}
 
 
-    model.θ_gmm_Σs: {model.θ_gmm_Σ_diags}
+    model.theta_gmm_sigmas: {model.θ_gmm_Σ_diags}
 
 
-    model.θ_gmm_πs: {model.θ_gmm_πs}
+    model.theta_gmm_pis: {model.θ_gmm_πs}
 
 """)
 
@@ -146,5 +156,3 @@ for i in range(1000):
 
 plt.scatter(x_samples.numpy()[:, 0], x_samples.numpy()[:, 1], s=5, c=z_samples.numpy())
 plt.show()
-
-

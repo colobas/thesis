@@ -1,3 +1,5 @@
+# -*- coding: utf-8 -*-
+
 import math
 
 import torch
@@ -7,9 +9,10 @@ import torch.distributions as dist
 import torch.optim as optim
 from torch.autograd import gradcheck, Variable
 
-#from pyro.distributions.relaxed_straight_through import RelaxedOneHotCategoricalStraightThrough
+from pyro.distributions.relaxed_straight_through import RelaxedOneHotCategoricalStraightThrough as RelaxedOneHotCategorical
 from torch.distributions.multivariate_normal import _batch_mahalanobis, _batch_diag, _batch_mv
-from torch.distributions import RelaxedOneHotCategorical, MultivariateNormal, Uniform
+#from torch.distributions import RelaxedOneHotCategorical, MultivariateNormal, Uniform
+from torch.distributions import MultivariateNormal, Uniform
 from tensorboardX import SummaryWriter
 
 from tqdm import trange
