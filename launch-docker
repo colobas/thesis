@@ -15,6 +15,7 @@ optirun -b primus sudo nvidia-docker run -it --rm \
     -v /tmp/.X11-unix:/tmp/.X11-unix \
     -e DISPLAY=$DISPLAY \
     -p 6006:6006 \
+    -p 8888:8888 \
     colobas/thesis \
     /bin/bash -c "\
     cd thesis && \
@@ -24,6 +25,9 @@ optirun -b primus sudo nvidia-docker run -it --rm \
     tmux select-window -t thesis:1 && \
     tmux send-keys 'cd ..' C-m && \
     tmux send-keys 'tensorboard --logdir runs' C-m  && \
+    tmux new-window -t thesis:2 -n 'jupyter' && \
+    tmux select-window -t thesis:2 && \
+    tmux send-keys 'jupyter notebook --ip=0.0.0.0 --port=8888 --allow-root --NotebookApp.token=\"\"' C-m && \
     tmux select-window -t thesis:0 && \
 
     /bin/bash -c 'tmux a -t thesis'"
