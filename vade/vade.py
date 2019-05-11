@@ -28,11 +28,6 @@ def mv_gaussian_log_prob(value, μ, Σ_diags, event_shape):
 
     return -0.5 * (event_shape * math.log(2 * math.pi) + M + log_det)
 
-
-# auxiliary functions for the EM part
-sel = lambda z_samples, k: z_samples.transpose(0, 1)[k].unsqueeze(-1)
-norm = lambda z_samples, k: sel(z_samples, k).sum()
-
 class VaDE(nn.Module):
     def __init__(self, n_clusters, y_dim, x_dim, encoder,
                  decoder, reg=0.01):
@@ -59,7 +54,7 @@ class VaDE(nn.Module):
             for _ in range(n_clusters)
         ]))
 
-        self.gmm_σs = torch.Parameter(torch.stack([
+        self.gmm_log_σs_sqr = torch.Parameter(torch.stack([
             torch.randn(x_dim, device=_DEVICE)
             for _ in range(n_clusters)
         ]))
@@ -69,39 +64,86 @@ class VaDE(nn.Module):
     def predict(self, Y):
         pass
 
-    def _fit_step(self, Y, temperature, n_samples=10):
-        enc_μs, enc_σs = self.gaussian_encoder(Y)
+    def _fit_step(self, Y, L=10):
+        """
+        L: integer, number of (x) samples per observation to estimate expectations.
+        """
+        enc_μs, enc_log_σs_sqr = self.gaussian_encoder(Y)
 
         N = Y.shape[0]
-        x_samples = Normal(enc_μs, enc_σs).rsample((n_samples,)).flatten(0, 1)
+        x_samples = Normal(enc_μs, enc_σs).rsample((L,)).flatten(0, 1)
 
-        dec_μs, dec_σs = self.decoder(x_samples)
+        dec_μs, dec_log_σs_sqr = self.decoder(x_samples)
 
+        # log (p(z')p(x(l)|z)) = logp(z') + logp(x(l)|z)
         aux = (F.log_softmax(self.gmm_πs_logits, dim=0) +
-               Normal(self.gmm_μs, self.gmm_σs**2).log_prob(x_samples))
+               Normal(self.gmm_μs, self.gmm_log_σs_sqr.exp()).log_prob(x_samples))
 
-        λ_c = F.softmax(aux, dim=1).view(N, n_samples, self.x_dim)
+        assert aux.shape == torch.size([N*L, self.n_clusters])
+        λ_z = (# exp-norm the log probs, to get probs -> softmax
+                F.softmax(aux, dim=1)
+               # reshape in L-samples-per-N-observations shape
+                .view(N, L, self.n_clusters)
+               # compute the expectation per Y observation
+                .mean(dim=1))
 
+        # expected gaussian log prob of observation (1 y obs -> L x samples)
+        # TODO: try to do this without using repeat on Y?
+        # TODO: check flatten, view, repeat, etc
+        term1 = (Normal(dec_μs, dec_log_σs_sqr.exp())
+                    # expand Y to calculate log prob w.r.t the different samples' parameters
+                    .log_prob(Y.unsqueeze(1).repeat(L).flatten(0, 1))
+                    # reshape in L-samples-per-N-observations shape
+                    .view(N, L, self.x_dim)
+                    # sum the per-dimension log probs, for each sample
+                    .sum(dim=2)
+                    # compute the expectation per Y observation
+                    .mean(dim=1)
+        )
 
-        return 
+        # expected gaussian log prob of continuous latent given cluster label
+        # (given by close form -> doesn't use the x samples)
+        # (it does indirectly, via q(z|y))
+        term2 = -(λ_z * (
+                      self.x_dim/2 * math.log(2*math.pi) +
+                      0.5 * (
+                          # sum of log(σ)^2 for fixed z, across dimensions.
+                          # gmm_log_σs_sqr shape is (n_clusters, n_dimensions)
+                          #self.gmm_log_σs_sqr.sum(dim=1) +
+                          # sum of ratio enc_σs^2 / gmm_σs^2 for fixed z, across dimensions
+                          #(enc_log_σs_sqr - self.gmm_log_σs_sqr).exp().sum(dim=1) +
+                          # sqr diff of μs, over gmm_σs^2, for fixed z, summed across dimensions
+                          #((enc_μs - self.gmm_μs)**2)/(self.gmm_log_σs_sqr.exp()).sum(dim=1)
+
+                          # equivalent as the commented, summing across dimensions only at the end
+                          # sum of log(σ)^2 for fixed z, across dimensions.
+                          # gmm_log_σs_sqr shape is (n_clusters, n_dimensions)
+                          (self.gmm_log_σs_sqr +
+                          (enc_log_σs_sqr - self.gmm_log_σs_sqr).exp() +
+                          ((enc_μs - self.gmm_μs)**2)/(self.gmm_log_σs_sqr.exp())).sum(dim=1)
+                      )
+                 )
+        ).sum(dim=1)
+
+        # expected categorical logp(z)
+        term3 = (λ_z * F.log_softmax(self.gmm_πs_logits)).sum(dim=1)
+
+        # expected gaussian log q(x|y)
+        term4 = -0.5 * (
+                    self.x_dim * math.log(2*math.pi) +
+                    (1 + enc_log_σs_sqr).sum(dim=1) # sum across x dimensions
+                )
+
+        # expected categorical logq(z|y)
+        term5 = (λ_z * λ_z.log()).sum()
+
+        elbo = term1 + term2 + term3 - term4 - term5
+
+        # we want to maximize elbo, so the loss is -elbo
+        return -elbo
 
     def fit(self, Y, temperature_schedule=None, n_epochs=1, bs=100, opt=None,
-            n_samples=10, clip_grad=None, verbose=False, writer=None):
-
-        # TODO: implement default values
-
-        if temperature_schedule is None:
-            # default temperature schedule, adapted from https://arxiv.org/pdf/1611.01144.pdf
-            # TODO: r and M should be hyperparams
-            r = 1e-2
-            M = bs//10
-            temperature = 1
-            def temperature_schedule(epoch, i, N):
-                t = (epoch * N + i)
-                if t % M == 0:
-                    return max(0.5, math.exp(-r * t))
-                else:
-                    return temperature
+            L=10, clip_grad=None, verbose=False, writer=None):
 
         if opt is None:
             # TODO: better defaults
@@ -122,9 +164,7 @@ class VaDE(nn.Module):
                 end_i = start_i + bs
                 yb = Y[start_i:end_i]
 
-                temperature = temperature_schedule(epoch, start_i, len(Y))
-
-                loss, loss1, loss2, loss3, loss4 = self._fit_step(yb, temperature, n_samples)
+                loss, loss1, loss2, loss3, loss4 = self._fit_step(yb, L)
 
                 # if we're writing to tensorboard
                 if writer is not None:
