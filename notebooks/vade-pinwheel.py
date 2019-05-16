@@ -46,7 +46,7 @@ def make_pinwheel_data(radial_std, tangential_std, num_classes, num_per_class, r
 
 
 # %%
-data, labels = make_pinwheel_data(0.3, 0.05, 3, 10000, 0.25)
+data, labels = make_pinwheel_data(0.3, 0.05, 3, 1000, 0.25)
 
 if False:
     plt.figure(figsize=(10, 10))
@@ -66,8 +66,8 @@ if use_cuda:
         n_clusters=n_clusters,
         y_dim=y_dim,
         x_dim=x_dim,
-        encoder=gaussianMLP(y_dim, x_dim, h_dim_enc, n_hidden=4).cuda(),
-        decoder=gaussianMLP(x_dim, y_dim, h_dim_dec, n_hidden=2).cuda(),
+        encoder=gaussianMLP(y_dim, x_dim, h_dim_enc, n_hidden=3).cuda(),
+        decoder=gaussianMLP(x_dim, y_dim, h_dim_dec, n_hidden=3).cuda(),
     ).cuda()
     data = torch.Tensor(data).cuda()
     print("using cuda")
@@ -76,8 +76,8 @@ else:
         n_clusters=n_clusters,
         y_dim=y_dim,
         x_dim=x_dim,
-        encoder=gaussianMLP(y_dim, x_dim, h_dim_enc, n_hidden=4),
-        decoder=gaussianMLP(x_dim, y_dim, h_dim_dec, n_hidden=2),
+        encoder=gaussianMLP(y_dim, x_dim, h_dim_enc, n_hidden=3),
+        decoder=gaussianMLP(x_dim, y_dim, h_dim_dec, n_hidden=3),
     )
     data = torch.Tensor(data)
 
@@ -87,10 +87,9 @@ else:
 model.fit(
     data,
     n_epochs=100,
-    bs=1000,
-    #opt=optim.Adam(model.parameters(), lr=0.001, momentum=0.0),
-    opt=optim.RMSprop(model.parameters(), lr=0.001),
-    n_samples=200,
+    bs=200,
+    opt=optim.Adam(model.parameters(), lr=0.001),
+    L=100,
     verbose=True,
     clip_grad=1e3,
     writer=SummaryWriter(f"/workspace/runs/{now_str()}")

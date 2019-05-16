@@ -17,17 +17,6 @@ from tqdm import trange
 
 _DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu") 
 
-def mv_gaussian_log_prob(value, μ, Σ_diags, event_shape):
-    """
-    Adapted from https://github.com/pytorch/pytorch/blob/master/torch/distributions/multivariate_normal.py
-    FOR DIAGONAL COV MATRICES ONLY
-    """
-    diff = value - μ
-    M = ((diff**2) / Σ_diags).sum(-1)
-    log_det = Σ_diags.log().sum(-1)
-
-    return -0.5 * (event_shape * math.log(2 * math.pi) + M + log_det)
-
 class VaDE(nn.Module):
     def __init__(self, n_clusters, y_dim, x_dim, encoder,
                  decoder, reg=0.01):
@@ -49,35 +38,91 @@ class VaDE(nn.Module):
         ################## Generative parameters #################
         self.decoder = decoder # latent var -> observ (params)
 
-        self.gmm_μs = torch.Parameter(torch.stack([
+        self.gmm_μs = nn.Parameter(torch.stack([
             torch.randn(x_dim, device=_DEVICE)
             for _ in range(n_clusters)
         ]))
 
-        self.gmm_log_σs_sqr = torch.Parameter(torch.stack([
+        self.gmm_log_σs_sqr = nn.Parameter(torch.stack([
             torch.randn(x_dim, device=_DEVICE)
             for _ in range(n_clusters)
         ]))
 
-        self.gmm_πs_logits = torch.Parameter(torch.rand(n_clusters, device=_DEVICE))
+        self.gmm_πs_logits = nn.Parameter(torch.rand(n_clusters, device=_DEVICE))
 
-    def predict(self, Y):
-        pass
+    def predict_X(self, Y, return_log_sigma_sqr=False):
+        enc_μs, enc_log_σs_sqr = self.encoder(Y)
+
+        if return_log_sigma_sqr:
+            return enc_μs, enc_log_σs_sqr
+
+        return enc_μs
+
+    def predict(self, Y, n_samples):
+        enc_μs, enc_log_σs_sqr = self.encoder(Y)
+
+        if n_samples > 0:
+            # estimate using samples of x
+            x_samples = Normal(enc_μs, enc_σs).rsample((n_samples,)).flatten(0, 1)
+            aux = (F.log_softmax(self.gmm_πs_logits, dim=0) +
+                   Normal(self.gmm_μs, self.gmm_log_σs_sqr.exp().sqrt()).log_prob(x_samples))
+            λ_z = (# exp-norm the log probs, to get probs -> softmax
+                    F.softmax(aux, dim=1)
+                   # reshape in L-samples-per-N-observations shape
+                    .view(N, L, self.n_clusters)
+                   # compute the expectation per Y observation
+                    .mean(dim=1))
+
+        else:
+            # estimate using enc_μs
+            # TODO: check this
+            aux = (F.log_softmax(self.gmm_πs_logits, dim=0) +
+                   Normal(self.gmm_μs, self.gmm_log_σs_sqr.exp().sqrt()).log_prob(enc_μs))
+            λ_z = F.softmax(aux, dim=1)
+
+        return enc_μs, λ_z.max(dim=1)[1]
+
+    def predict_proba(self, Y, n_samples=100):
+        enc_μs, enc_log_σs_sqr = self.encoder(Y)
+
+        if n_samples > 0:
+            # estimate using samples of x
+            x_samples = Normal(enc_μs, enc_σs).rsample((n_samples,)).flatten(0, 1)
+            aux = (F.log_softmax(self.gmm_πs_logits, dim=0) +
+                   Normal(self.gmm_μs, self.gmm_log_σs_sqr.exp().sqrt()).log_prob(x_samples))
+            λ_z = (# exp-norm the log probs, to get probs -> softmax
+                    F.softmax(aux, dim=1)
+                   # reshape in L-samples-per-N-observations shape
+                    .view(N, L, self.n_clusters)
+                   # compute the expectation per Y observation
+                    .mean(dim=1))
+            return λ_z
+
+        else:
+            # estimate using enc_μs
+            # TODO: check this
+            aux = (F.log_softmax(self.gmm_πs_logits, dim=0) +
+                   Normal(self.gmm_μs, self.gmm_log_σs_sqr.exp().sqrt()).log_prob(enc_μs))
+            return F.softmax(aux, dim=1)
 
     def _fit_step(self, Y, L=10):
         """
         L: integer, number of (x) samples per observation to estimate expectations.
         """
-        enc_μs, enc_log_σs_sqr = self.gaussian_encoder(Y)
+        enc_μs, enc_log_σs_sqr = self.encoder(Y)
 
         N = Y.shape[0]
-        x_samples = Normal(enc_μs, enc_σs).rsample((L,)).flatten(0, 1)
+        x_samples = Normal(enc_μs, enc_log_σs_sqr.exp().sqrt()).rsample((L,)).flatten(0, 1)
 
         dec_μs, dec_log_σs_sqr = self.decoder(x_samples)
 
-        # log (p(z')p(x(l)|z)) = logp(z') + logp(x(l)|z)
+        # log (p(z')p(x(l)|z')) = logp(z') + logp(x(l)|z')
+        # explanation of why I'm calling `.unsqueeze` on x_samples can be
+        # found in tests/gmm_log_prob.py
+
         aux = (F.log_softmax(self.gmm_πs_logits, dim=0) +
-               Normal(self.gmm_μs, self.gmm_log_σs_sqr.exp()).log_prob(x_samples))
+               Normal(self.gmm_μs, self.gmm_log_σs_sqr.exp().sqrt()).log_prob(x_samples.unsqueeze(1)))
+
 
         assert aux.shape == torch.size([N*L, self.n_clusters])
         λ_z = (# exp-norm the log probs, to get probs -> softmax
@@ -90,7 +135,7 @@ class VaDE(nn.Module):
         # expected gaussian log prob of observation (1 y obs -> L x samples)
         # TODO: try to do this without using repeat on Y?
         # TODO: check flatten, view, repeat, etc
-        term1 = (Normal(dec_μs, dec_log_σs_sqr.exp())
+        term1 = (Normal(dec_μs, dec_log_σs_sqr.exp().sqrt())
                     # expand Y to calculate log prob w.r.t the different samples' parameters
                     .log_prob(Y.unsqueeze(1).repeat(L).flatten(0, 1))
                     # reshape in L-samples-per-N-observations shape
@@ -140,7 +185,7 @@ class VaDE(nn.Module):
         elbo = term1 + term2 + term3 - term4 - term5
 
         # we want to maximize elbo, so the loss is -elbo
-        return -elbo
+        return -elbo, -term1, -term2, -term3, term4, term5
 
     def fit(self, Y, temperature_schedule=None, n_epochs=1, bs=100, opt=None,
             L=10, clip_grad=None, verbose=False, writer=None):
@@ -164,7 +209,7 @@ class VaDE(nn.Module):
                 end_i = start_i + bs
                 yb = Y[start_i:end_i]
 
-                loss, loss1, loss2, loss3, loss4 = self._fit_step(yb, L)
+                loss, loss1, loss2, loss3, loss4, loss5 = self._fit_step(yb, L)
 
                 # if we're writing to tensorboard
                 if writer is not None:
@@ -174,7 +219,8 @@ class VaDE(nn.Module):
                         writer.add_scalar('losses/loss2', loss2, n_iter)
                         writer.add_scalar('losses/loss3', loss3, n_iter)
                         writer.add_scalar('losses/loss4', loss4, n_iter)
-                        writer.add_scalar('losses/total_loss', loss, n_iter)
+                        writer.add_scalar('losses/loss5', loss4, n_iter)
+                        writer.add_scalar('losses/-elbo', loss, n_iter)
 
                 loss.backward()
 

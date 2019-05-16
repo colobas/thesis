@@ -1,1 +1,1 @@
-from .basic_models import gaussianMLP, categMLP
+from .basic_models import gaussianMLP
