@@ -18,7 +18,7 @@ _DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 class VaDE(nn.Module):
     def __init__(self, n_clusters, y_dim, x_dim, encoder,
-                 decoder):
+                 decoder, gmm_pis=None, train_pis=True):
         """
         Note that Y are the observations (the data)
         and X are the latent representations
@@ -46,7 +46,16 @@ class VaDE(nn.Module):
             for _ in range(n_clusters)
         ]))
 
-        self.gmm_πs = nn.Parameter(F.softmax(torch.randn(n_clusters, device=_DEVICE), dim=0))
+        if train_pis:
+            if gmm_pis is None:
+                self.gmm_πs = nn.Parameter(F.softmax(torch.randn(n_clusters, device=_DEVICE), dim=0))
+            else:
+                self.gmm_πs = nn.Parameter(F.softmax(torch.Tensor(gmm_pis, device=_DEVICE), dim=0))
+        else:
+            if gmm_pis is None:
+                self.gmm_πs = F.softmax(torch.ones(n_clusters, device=_DEVICE), dim=0)
+            else:
+                self.gmm_πs = F.softmax(torch.Tensor(gmm_pis, device=_DEVICE), dim=0)
 
     def predict_X(self, Y, return_log_sigma_sqr=False):
         enc_μs, enc_log_σs_sqr = self.encoder(Y)
