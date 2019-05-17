@@ -46,7 +46,7 @@ class VaDE(nn.Module):
             for _ in range(n_clusters)
         ]))
 
-        self.gmm_πs_logits = nn.Parameter(torch.rand(n_clusters, device=_DEVICE))
+        self.gmm_πs = nn.Parameter(F.softmax(torch.randn(n_clusters, device=_DEVICE), dim=0))
 
     def predict_X(self, Y, return_log_sigma_sqr=False):
         enc_μs, enc_log_σs_sqr = self.encoder(Y)
@@ -62,7 +62,7 @@ class VaDE(nn.Module):
 
         x_samples = Normal(enc_μs, enc_log_σs_sqr.exp().sqrt()).sample((n_samples,)).flatten(0, 1)
         aux = (
-          F.log_softmax(self.gmm_πs_logits, dim=0) +
+          (self.gmm_πs + 1e-6).log() +
           Normal(self.gmm_μs, self.gmm_log_σs_sqr.exp().sqrt())
             .log_prob(x_samples.unsqueeze(1))
             .sum(dim=2)
@@ -126,7 +126,7 @@ class VaDE(nn.Module):
         # (explanation of why I'm calling `.unsqueeze` on x_samples can be
         #  found in tests/gmm_log_prob.py)
         aux = (
-          F.log_softmax(self.gmm_πs_logits, dim=0) +
+          (self.gmm_πs + 1e-6).log() +
           Normal(self.gmm_μs, self.gmm_log_σs_sqr.exp().sqrt())
             .log_prob(x_samples.unsqueeze(1))
             .sum(dim=2)
@@ -178,7 +178,7 @@ class VaDE(nn.Module):
         ).sum(dim=1)
 
         # expected categorical logp(z)
-        term3 = (λ_z * F.log_softmax(self.gmm_πs_logits, dim=0)).sum(dim=1)
+        term3 = (λ_z * (self.gmm_πs + 1e-6).log()).sum(dim=1)
 
         # expected gaussian log q(x|y)
         term4 = -0.5 * (
@@ -187,9 +187,17 @@ class VaDE(nn.Module):
                 )
 
         # expected categorical logq(z|y)
-        term5 = (λ_z * λ_z.log()).sum()
+        term5 = (λ_z * (λ_z + 1e-6).log()).sum()
 
         elbo = (term1 + term2 + term3 - term4 - term5).mean()
+        #print(f"""
+        #term1: {term1}
+        #term2: {term2}
+        #term3: {term3}
+        #term4: {term4}
+        #term5: {term5}
+        #""")
+        #assert False
 
         # we want to maximize elbo, so the loss is -elbo
         if return_all_terms:
