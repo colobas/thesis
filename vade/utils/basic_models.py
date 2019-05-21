@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class gaussianMLP(nn.Module):
-    def __init__(self, x_dim, z_dim, h_dim, n_hidden=4, reg=0.01):
+    def __init__(self, x_dim, z_dim, h_dim, n_hidden=4):
         """
         DON'T CONFUSE THE VARIABLE NAMES USED HERE WITH THE ONES
         FROM THE PAPER/MODEL
@@ -22,7 +22,13 @@ class gaussianMLP(nn.Module):
         self.hidden = nn.ModuleList([nn.Linear(h_dim, h_dim) for _ in range(n_hidden)])
         self.mu_weights = nn.Linear(h_dim, z_dim)
         self.cov_diag_weights = nn.Linear(h_dim, z_dim)
-        self.reg = reg
+
+    def get_pretrain_params(self):
+        return (
+          list(self.in_layer.parameters())+
+          list(self.hidden.parameters())+
+          list(self.mu_weights.parameters())
+        )
 
     def forward(self, x):
         x = self.in_layer(x)

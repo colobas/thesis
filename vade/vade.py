@@ -50,12 +50,12 @@ class VaDE(nn.Module):
             if gmm_pis is None:
                 self.gmm_πs = nn.Parameter(F.softmax(torch.randn(n_clusters, device=_DEVICE), dim=0))
             else:
-                self.gmm_πs = nn.Parameter(F.softmax(torch.Tensor(gmm_pis, device=_DEVICE), dim=0))
+                self.gmm_πs = nn.Parameter(F.softmax(torch.Tensor(gmm_pis).to(_DEVICE), dim=0))
         else:
             if gmm_pis is None:
                 self.gmm_πs = F.softmax(torch.ones(n_clusters, device=_DEVICE), dim=0)
             else:
-                self.gmm_πs = F.softmax(torch.Tensor(gmm_pis, device=_DEVICE), dim=0)
+                self.gmm_πs = F.softmax(torch.Tensor(gmm_pis).to(_DEVICE), dim=0)
 
     def predict_X(self, Y, return_log_sigma_sqr=False):
         enc_μs, enc_log_σs_sqr = self.encoder(Y)
@@ -116,6 +116,51 @@ class VaDE(nn.Module):
             #       Normal(self.gmm_μs, self.gmm_log_σs_sqr.exp().sqrt()).log_prob(enc_μs))
             #return F.softmax(aux, dim=1)
 
+    def pretrain(self, Y, bs, n_epochs, opt=None, writer=None, verbose=False):
+        best_loss = float("+inf")
+
+        if opt is None:
+            opt = optim.Adam(list(self.decoder.parameters())+list(self.encoder.parameters()), lr=0.001)
+
+        if verbose:
+            epochs = trange(n_epochs, desc="epoch")
+        else:
+            epochs = range(n_epochs)
+
+        for epoch in epochs:
+            if verbose:
+                batches = trange((len(Y) - 1) // bs + 1, desc="batch")
+            else:
+                batches = range((len(Y) - 1) // bs + 1)
+            for i in batches:
+                start_i = i * bs
+                end_i = start_i + bs
+                yb = Y[start_i:end_i]
+
+                enc_mu_x, _ = self.encoder(yb)
+                dec_mu_y, _ = self.decoder(enc_mu_x)
+
+                loss = F.mse_loss(yb, dec_mu_y)
+
+                loss.backward()
+                if loss <= best_loss:
+                    best_dec = self.decoder.state_dict()
+                    best_enc = self.encoder.state_dict()
+                    best_loss = loss
+
+                if writer is not None:
+                    n_iter = epoch*len(Y) + start_i
+                    if n_iter % 10 == 0:
+                        writer.add_scalar("losses/ae_pre_train", loss, n_iter)
+
+                opt.step()
+                opt.zero_grad()
+
+        #self.encoder.load_state_dict(best_enc)
+        #self.decoder.load_state_dict(best_dec)
+
+        return best_enc, best_dec
+
     def _fit_step(self, Y, L=10, return_all_terms=False):
         """
         L: integer, number of (x) samples per observation to estimate expectations.
@@ -128,8 +173,8 @@ class VaDE(nn.Module):
         dec_μs, dec_log_σs_sqr = self.decoder(x_samples)
 
         # reshape to L-params-per-Y-observation form
-        dec_μs = dec_μs.view(N, L, self.x_dim)
-        dec_log_σs_sqr = dec_log_σs_sqr.view(N, L, self.x_dim)
+        dec_μs = dec_μs.view(N, L, self.y_dim)
+        dec_log_σs_sqr = dec_log_σs_sqr.view(N, L, self.y_dim)
 
         # log (p(z')p(x(l)|z')) = logp(z') + logp(x(l)|z')
         # (explanation of why I'm calling `.unsqueeze` on x_samples can be
@@ -199,14 +244,6 @@ class VaDE(nn.Module):
         term5 = (λ_z * (λ_z + 1e-6).log()).sum()
 
         elbo = (term1 + term2 + term3 - term4 - term5).mean()
-        #print(f"""
-        #term1: {term1}
-        #term2: {term2}
-        #term3: {term3}
-        #term4: {term4}
-        #term5: {term5}
-        #""")
-        #assert False
 
         # we want to maximize elbo, so the loss is -elbo
         if return_all_terms:
@@ -216,6 +253,9 @@ class VaDE(nn.Module):
 
     def fit(self, Y, temperature_schedule=None, n_epochs=1, bs=100, opt=None,
             L=10, clip_grad=None, verbose=False, writer=None):
+
+        best_losses = [float("inf") for i in range(6)]
+        best_params = [dict() for i in range(6)]
 
         if opt is None:
             # TODO: better defaults
@@ -237,9 +277,18 @@ class VaDE(nn.Module):
                 yb = Y[start_i:end_i]
 
                 if writer is not None:
-                    loss, loss1, loss2, loss3, loss4, loss5 = self._fit_step(yb, L, return_all_terms=True)
+                    losses = self._fit_step(yb, L, return_all_terms=True)
+                    loss, loss1, loss2, loss3, loss4, loss5 = losses
+
+                    for i, _loss in enumerate(losses):
+                        if _loss <= best_losses[i]:
+                            best_losses[i] = _loss.item()
+                            best_params[i] = self.state_dict()
                 else:
                     loss = self._fit_step(yb, L)
+                    if loss <= best_losses[0]:
+                        best_losses[0] = loss.item()
+                        best_params[0] = self.state_dict()
 
                 # if we're writing to tensorboard
                 if writer is not None:
@@ -259,3 +308,5 @@ class VaDE(nn.Module):
 
                 opt.step()
                 opt.zero_grad()
+
+        return best_losses, best_params

@@ -1,4 +1,11 @@
 # -*- coding: utf-8 -*-
+# %%
+from IPython import get_ipython
+ipython = get_ipython()
+
+if ipython is not None:
+    ipython.magic("%load_ext autoreload")
+    ipython.magic("%autoreload 2")
 
 # %%
 import itertools
@@ -10,7 +17,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
-from torch.distributions import MultivariateNormal, Categorical
+from torch.distributions import Normal, Categorical
 
 from vade import VaDE
 from vade.utils import gaussianMLP
@@ -46,19 +53,22 @@ def make_pinwheel_data(radial_std, tangential_std, num_classes, num_per_class, r
 
 
 # %%
-data, labels = make_pinwheel_data(0.3, 0.05, 3, 1000, 0.25)
+data, labels = make_pinwheel_data(0.3, 0.05, 3, 10000, 0.25)
 
-if False:
+
+if ipython is not None:
     plt.figure(figsize=(10, 10))
     plt.scatter(data[:,0], data[:,1], c=labels, s=5)
     plt.show()
 
 # %%
-x_dim = 2
+x_dim = 1
 y_dim = 2
 h_dim_enc = 2
 h_dim_dec = 2
 n_clusters = 3
+n_hidden_enc = 1
+n_hidden_dec = 1
 
 
 if use_cuda:
@@ -66,8 +76,10 @@ if use_cuda:
         n_clusters=n_clusters,
         y_dim=y_dim,
         x_dim=x_dim,
-        encoder=gaussianMLP(y_dim, x_dim, h_dim_enc, n_hidden=3).cuda(),
-        decoder=gaussianMLP(x_dim, y_dim, h_dim_dec, n_hidden=3).cuda(),
+        encoder=gaussianMLP(y_dim, x_dim, h_dim_enc, n_hidden=n_hidden_enc).cuda(),
+        decoder=gaussianMLP(x_dim, y_dim, h_dim_dec, n_hidden=n_hidden_dec).cuda(),
+        gmm_pis=[0.3333, 0.3333, 0.3333],
+        train_pis=False
     ).cuda()
     data = torch.Tensor(data).cuda()
     print("using cuda")
@@ -76,28 +88,95 @@ else:
         n_clusters=n_clusters,
         y_dim=y_dim,
         x_dim=x_dim,
-        encoder=gaussianMLP(y_dim, x_dim, h_dim_enc, n_hidden=3),
-        decoder=gaussianMLP(x_dim, y_dim, h_dim_dec, n_hidden=3),
+        encoder=gaussianMLP(y_dim, x_dim, h_dim_enc, n_hidden=n_hidden_enc),
+        decoder=gaussianMLP(x_dim, y_dim, h_dim_dec, n_hidden=n_hidden_dec),
+        gmm_pis=torch.Tensor([0.3333, 0.3333, 0.3333]),
+        train_pis=False
     )
     data = torch.Tensor(data)
 
 # %%
+best_enc, best_dec = (
+    model.pretrain(data,
+                   bs=32,
+                   n_epochs=500,
+                   writer=SummaryWriter(f"/workspace/runs/{now_str()}"),
+                   verbose=True,
+                   opt=optim.Adam(model.decoder.get_pretrain_params()+
+                                  model.encoder.get_pretrain_params(), lr=0.001)))
 
+# %%
+enc, _ = model.encoder(data)
+Yhat, _ = model.decoder(enc)
 
-model.fit(
+Yhat = Yhat.detach().cpu()
+enc = enc.detach().cpu()
+
+# %%
+if ipython is not None:
+    plt.figure(figsize=(10, 10))
+    plt.scatter(enc[:,0], enc[:,1], c=labels, s=5)
+    plt.show()
+
+# %%
+if ipython is not None:
+    plt.figure(figsize=(10, 10))
+    plt.scatter(Yhat[:,0], Yhat[:,1], c=labels, s=5)
+    plt.show()
+
+# %% [markdown]
+# with best_params
+
+# %%
+model.encoder.load_state_dict(best_enc)
+model.decoder.load_state_dict(best_dec)
+
+# %%
+enc, _ = model.encoder(data)
+Yhat, _ = model.decoder(enc)
+
+Yhat = Yhat.detach().cpu()
+enc = enc.detach().cpu()
+
+# %%
+if ipython is not None:
+    plt.figure(figsize=(10, 10))
+    plt.scatter(enc[:,0], enc[:,1], c=labels, s=5)
+    plt.show()
+
+# %%
+if ipython is not None:
+    plt.figure(figsize=(10, 10))
+    plt.scatter(Yhat[:,0], Yhat[:,1], c=labels, s=5)
+    plt.show()
+
+# %%
+
+# %%
+
+# %%
+
+# %%
+
+# %%
+
+# %%
+best_losses, best_params = model.fit(
     data,
-    n_epochs=100,
-    bs=200,
-    opt=optim.Adam(model.parameters(), lr=0.001),
+    n_epochs=500,
+    bs=128,
+    opt=optim.Adam(model.parameters(), lr=0.01),
     L=100,
     verbose=True,
     clip_grad=1e3,
     writer=SummaryWriter(f"/workspace/runs/{now_str()}")
 )
 
+final_params = model.state_dict()
+
 # %%
 
-X, Z = model.predict(data)
+X, Z = model.predict(data.cuda())
 
 if use_cuda:
     data = data.cpu()
@@ -120,22 +199,51 @@ else:
 
 label = proba.argmax(dim=1).detach().numpy()
 
-plt.scatter(data.numpy()[:,0], data.numpy()[:,1], c=Z.numpy(), s=5)
-plt.scatter(grid[:, 0], grid[:, 1], c=label, s=proba.max(dim=1)[0].detach().numpy()*20, alpha=0.6)
+plt.hexbin(grid[:, 0], grid[:, 1], C=proba.detach())
+
+#plt.scatter(data.numpy()[:,0], data.numpy()[:,1], c=Z.numpy(), s=5)
 plt.show()
 
 # %%
+import pandas as pd
 
+# %%
 z_samples = torch.zeros(1000)
 x_samples = torch.zeros(1000, x_dim)
 for i in range(1000):
-    k = Categorical(probs=model.θ_gmm_πs).sample().item()
+    k = Categorical(probs=model.gmm_πs).sample().item()
     z_samples[i] = k
     x_samples[i] = (
-            MultivariateNormal(loc=model.θ_gmm_μs[k],
-                       covariance_matrix=torch.diag_embed(model.θ_gmm_Σ_diags[k]))
+            Normal(model.gmm_μs[k],
+                   model.gmm_log_σs_sqr.exp().sqrt()[k])
+    ).sample()
+
+#pd.Series(x_samples).hist(bins=20)
+
+# %%
+X = model.predict_X(data.cuda()).detach().cpu()
+
+# %%
+pd.Series(X).hist(bins=20)
+
+# %%
+z_samples = torch.zeros(1000)
+x_samples = torch.zeros(1000, x_dim)
+for i in range(1000):
+    k = Categorical(probs=model.gmm_πs).sample().item()
+    z_samples[i] = k
+    x_samples[i] = (
+            Normal(model.gmm_μs[k],
+                   model.gmm_log_σs_sqr.exp().sqrt()[k])
     ).sample()
 
 
 plt.scatter(x_samples.numpy()[:, 0], x_samples.numpy()[:, 1], s=5, c=z_samples.numpy())
 plt.show()
+
+# %%
+y_samples = model.decoder(x_samples.cuda())[0].detach().cpu()
+plt.scatter(y_samples.numpy()[:, 0], y_samples.numpy()[:, 1], s=5, c=z_samples.numpy())
+plt.show()
+
+# %%
