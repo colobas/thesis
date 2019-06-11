@@ -48,6 +48,7 @@ def make_pinwheel_data(radial_std, tangential_std, num_classes, num_per_class, r
     feats = 10 * np.einsum('ti,tij->tj', features, rotations)
 
     data = np.random.permutation(np.hstack([feats, labels[:, None]]))
+    data[:, 0:2] = (data[:, 0:2] + np.array([20, 20]))/40
 
     return data[:, 0:2], data[:, 2].astype(np.int)
 
@@ -64,8 +65,8 @@ if ipython is not None:
 # %%
 x_dim = 1
 y_dim = 2
-h_dim_enc = 2
-h_dim_dec = 2
+h_dim_enc = 50
+h_dim_dec = 50
 n_clusters = 3
 n_hidden_enc = 1
 n_hidden_dec = 1
@@ -98,8 +99,8 @@ else:
 # %%
 best_enc, best_dec = (
     model.pretrain(data,
-                   bs=32,
-                   n_epochs=500,
+                   bs=128,
+                   n_epochs=200,
                    writer=SummaryWriter(f"/workspace/runs/{now_str()}"),
                    verbose=True,
                    opt=optim.Adam(model.decoder.get_pretrain_params()+
@@ -111,12 +112,6 @@ Yhat, _ = model.decoder(enc)
 
 Yhat = Yhat.detach().cpu()
 enc = enc.detach().cpu()
-
-# %%
-if ipython is not None:
-    plt.figure(figsize=(10, 10))
-    plt.scatter(enc[:,0], enc[:,1], c=labels, s=5)
-    plt.show()
 
 # %%
 if ipython is not None:
@@ -137,12 +132,6 @@ Yhat, _ = model.decoder(enc)
 
 Yhat = Yhat.detach().cpu()
 enc = enc.detach().cpu()
-
-# %%
-if ipython is not None:
-    plt.figure(figsize=(10, 10))
-    plt.scatter(enc[:,0], enc[:,1], c=labels, s=5)
-    plt.show()
 
 # %%
 if ipython is not None:
@@ -175,7 +164,16 @@ best_losses, best_params = model.fit(
 final_params = model.state_dict()
 
 # %%
+for i, state_dict in enumerate(best_params):
+    torch.save(state_dict, f"state_dict_{i}")
 
+# %%
+model.load_state_dict(best_params[0])
+
+# %%
+X, Z = model.predict(data.cuda())
+
+# %%
 X, Z = model.predict(data.cuda())
 
 if use_cuda:
