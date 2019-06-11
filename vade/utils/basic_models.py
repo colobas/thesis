@@ -32,10 +32,10 @@ class gaussianMLP(nn.Module):
 
     def forward(self, x):
         x = self.in_layer(x)
-        x = F.relu(x)
+        x = F.leaky_relu(x)
         for hid in self.hidden:
             x = hid(x)
-            x = F.relu(x)
+            x = F.leaky_relu(x)
 
         mu = self.mu_weights(x)
         cov_diag = self.cov_diag_weights(x)
