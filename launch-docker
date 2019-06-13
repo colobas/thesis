@@ -1,7 +1,7 @@
 #!/usr/bin/bash
 
 if [ "$#" -ne 2 ]; then
-    PKG_FOLDER=/home/colobas/dev/guilhermepires-thesis
+    WORKSPACE_FOLDER=/home/colobas/dev/guilhermepires-thesis
     TENSORBOARD_LOGS_FOLDER=/home/colobas/dev/tensorboard_logs
 else
     PKG_FOLDER=$1
@@ -10,7 +10,7 @@ fi
 
 xhost +
 optirun -b primus sudo nvidia-docker run -it --rm \
-    -v $PKG_FOLDER:/workspace/thesis \
+    -v $WORKSPACE_FOLDER:/workspace/thesis \
     -v $TENSORBOARD_LOGS_FOLDER:/workspace/runs\
     -v /tmp/.X11-unix:/tmp/.X11-unix \
     -e DISPLAY=$DISPLAY \
@@ -19,7 +19,7 @@ optirun -b primus sudo nvidia-docker run -it --rm \
     colobas/thesis \
     /bin/bash -c "\
     cd thesis && \
-    pip install -e . && \
+    pip install -e ./packages && \
     tmux -2 new-session -d -s thesis && \
     tmux new-window -t thesis:1 -n 'tensorboard' && \
     tmux select-window -t thesis:1 && \
