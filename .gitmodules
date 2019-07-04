@@ -1,0 +1,3 @@
+[submodule "packages/normalizing-flows"]
+	path = packages/normalizing-flows
+	url = git@github.com:colobas/normalizing-flows.git
