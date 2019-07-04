@@ -1,25 +1,22 @@
 #!/usr/bin/bash
 
-if [ "$#" -ne 2 ]; then
-    PKG_FOLDER=$(pwd)
-    TENSORBOARD_LOGS_FOLDER="$(pwd)/tensorboard_logs"
-else
-    PKG_FOLDER=$1
-    TENSORBOARD_LOGS_FOLDER=$2
-fi
+PKG_FOLDER=./packages
+SANDBOX_FOLDER=./sandbox
+TENSORBOARD_LOGS_FOLDER="./sandbox/tensorboard_logs"
 
 #nvidia-docker run -it --rm \
 xhost +
 optirun -b primus nvidia-docker run -it --rm \
-    -v $PKG_FOLDER:/workspace/sandbox \
+    -v $PKG_FOLDER:/workspace/packages \
+    -v $SANDBOX_FOLDER:/workspace/sandbox \
     -v $TENSORBOARD_LOGS_FOLDER:/workspace/runs \
-    -v $(readlink ./nf):/workspace/nf \
     -v /tmp/.X11-unix:/tmp/.X11-unix \
     -e DISPLAY=$DISPLAY \
     -p 6006:6006 \
     -p 8888:8888 \
     colobas/dl-sandbox \
     /bin/bash -c "\
+    pip install -e packages/*
     cd sandbox && \
     tmux -2 new-session -d -s sandbox && \
     tmux new-window -t sandbox:1 -n 'tensorboard' && \
