@@ -1,8 +1,8 @@
 #!/usr/bin/bash
 
-PKG_FOLDER=./packages
-SANDBOX_FOLDER=./sandbox
-TENSORBOARD_LOGS_FOLDER="./sandbox/tensorboard_logs"
+PKG_FOLDER="$(pwd)/packages"
+SANDBOX_FOLDER="$(pwd)/sandbox"
+TENSORBOARD_LOGS_FOLDER="$(pwd)/sandbox/tensorboard_logs"
 
 #nvidia-docker run -it --rm \
 xhost +
@@ -16,7 +16,7 @@ optirun -b primus nvidia-docker run -it --rm \
     -p 8888:8888 \
     colobas/dl-sandbox \
     /bin/bash -c "\
-    pip install -e packages/*
+    cd packages && python install-all.py && cd .. \
     cd sandbox && \
     tmux -2 new-session -d -s sandbox && \
     tmux new-window -t sandbox:1 -n 'tensorboard' && \
