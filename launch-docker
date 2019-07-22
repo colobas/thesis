@@ -21,10 +21,11 @@ optirun -b primus nvidia-docker run -it --rm \
     tmux -2 new-session -d -s sandbox && \
     tmux new-window -t sandbox:1 -n 'tensorboard' && \
     tmux select-window -t sandbox:1 && \
-    tmux send-keys 'cd ..' C-m && \
+    tmux send-keys 'cd /workspace' C-m && \
     tmux send-keys 'tensorboard --logdir runs' C-m  && \
     tmux new-window -t sandbox:2 -n 'jupyter' && \
     tmux select-window -t sandbox:2 && \
+    tmux send-keys 'cd /workspace/sandbox' C-m && \
     tmux send-keys 'jupyter notebook --ip=0.0.0.0 --port=8888 --allow-root --NotebookApp.token=\"\"' C-m && \
     tmux select-window -t sandbox:0 && \
 
