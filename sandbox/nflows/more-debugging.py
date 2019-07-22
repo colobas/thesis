@@ -98,15 +98,35 @@ writer = SummaryWriter(f"/workspace/sandbox/tensorboard_logs/{now_str()}")
 
 best_loss = torch.Tensor([float("+inf")])
 
-for it in trange(100000):
+attempts = 0
+
+for it in trange(int(1e5)):
     opt.zero_grad()
     loss = -flow.final_density.log_prob(x_samples).mean()
+    
+    if loss <= 0:
+        if attempts < 100:
+            attempts += 1
+            continue
+        else:
+            print("Loss has diverged, halting train and not backpropagating")
+            break
+    
     if loss <= best_loss:
         best_loss = loss
         best_flow = deepcopy(flow)
     loss.backward()
     if it % 50 == 0:
         writer.add_scalar("loss", loss, it)
+    
+    if it % 5000 == 0:
+        with torch.no_grad():
+            xhat_samples = flow.final_density.sample((1000, ))
+            plt.scatter(xhat_samples[:, 0], xhat_samples[:, 1], s=5, c="red")
+            plt.scatter(x_samples[:, 0], x_samples[:, 1], s=5, c="blue")
+            #plt.xlim(0, 60)
+            #plt.ylim(-15, 15)
+            plt.show()
 
 #    if it % 100 == 0:
 #        f = plt.figure(figsize=(20, 20))
@@ -121,7 +141,7 @@ for it in trange(100000):
     opt.step()
 
 # %%
-flow = best_flow
+#flow = best_flow
 
 # %%
 xhat_samples = flow.final_density.sample((1000, ))
@@ -362,6 +382,9 @@ for i, bij in enumerate(flow.bijectors):
 log_abs_det_jacobian(flow.bijectors[-1], torch.Tensor([[1, 1]]), None)
 
 # %%
+flow.bijectors[-1].log_abs_det_jacobian(torch.Tensor([[1, 1]]), None)
+
+# %%
 x = torch.Tensor(X0)
 
 # %%
@@ -374,5 +397,3 @@ for i, bij in enumerate(flow.bijectors):
 
 # %%
 flow.transforms.log_abs_det_jacobian(torch.Tensor([[1, 1]]), None)
-
-# %%
