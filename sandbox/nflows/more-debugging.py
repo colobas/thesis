@@ -94,16 +94,32 @@ opt = optim.Adam(flow.parameters(), lr=1e-3)
 count_parameters(flow)
 
 # %%
+n_epochs = 10000
+bs = 512
+
+# %%
 writer = SummaryWriter(f"/workspace/sandbox/tensorboard_logs/{now_str()}")
 
 best_loss = torch.Tensor([float("+inf")])
 
 attempts = 0
 
+
+#for epoch in trange(n_epochs):
+#    batches = range((len(x_samples) - 1) // bs + 1)
+#    for i in batches:
+#        start_i = i * bs
+#        end_i = start_i + bs
+#        xb = x_samples[start_i:end_i]
+#        it = epoch*len(x_samples) + start_i
+
+#        opt.zero_grad()
+#        loss = -flow.final_density.log_prob(xb).mean()
+
 for it in trange(int(1e5)):
     opt.zero_grad()
     loss = -flow.final_density.log_prob(x_samples).mean()
-    
+
     if loss <= 0:
         if attempts < 100:
             attempts += 1
@@ -111,14 +127,16 @@ for it in trange(int(1e5)):
         else:
             print("Loss has diverged, halting train and not backpropagating")
             break
-    
+
     if loss <= best_loss:
         best_loss = loss
         best_flow = deepcopy(flow)
+    
     loss.backward()
+    
     if it % 50 == 0:
         writer.add_scalar("loss", loss, it)
-    
+
     if it % 5000 == 0:
         with torch.no_grad():
             xhat_samples = flow.final_density.sample((1000, ))
@@ -127,21 +145,24 @@ for it in trange(int(1e5)):
             #plt.xlim(0, 60)
             #plt.ylim(-15, 15)
             plt.show()
+            print(loss)
 
-#    if it % 100 == 0:
-#        f = plt.figure(figsize=(20, 20))
-#        xhat_samples = flow.final_density.sample((1000, ))
-#        plt.scatter(xhat_samples[:, 0], xhat_samples[:, 1], s=5, c="red")
-#        plt.xlim(-5, 40)
-#        plt.ylim(-15, 15)
-#        plt.title(f"{loss.detach().numpy()}")
-#        plt.savefig(f"to_gif/it_{it}.png")
-#        plt.close()
-
+    #    if it % 100 == 0:
+    #        f = plt.figure(figsize=(20, 20))
+    #        xhat_samples = flow.final_density.sample((1000, ))
+    #        plt.scatter(xhat_samples[:, 0], xhat_samples[:, 1], s=5, c="red")
+    #        plt.xlim(-5, 40)
+    #        plt.ylim(-15, 15)
+    #        plt.title(f"{loss.detach().numpy()}")
+    #        plt.savefig(f"to_gif/it_{it}.png")
+    #        plt.close()
     opt.step()
 
 # %%
-#flow = best_flow
+loss
+
+# %%
+flow = best_flow
 
 # %%
 xhat_samples = flow.final_density.sample((1000, ))
@@ -397,3 +418,10 @@ for i, bij in enumerate(flow.bijectors):
 
 # %%
 flow.transforms.log_abs_det_jacobian(torch.Tensor([[1, 1]]), None)
+
+# %%
+flow.final_density.log_prob(x_samples).mean()
+
+# %%
+
+# %%
