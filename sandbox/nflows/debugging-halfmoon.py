@@ -1,12 +1,4 @@
 # %%
-from IPython import get_ipython
-ipython = get_ipython()
-
-if ipython is not None:
-    ipython.magic("%load_ext autoreload")
-    ipython.magic("%autoreload 2")
-
-# %%
 import numpy as np
 
 np.random.seed(0)
@@ -140,8 +132,8 @@ for it in trange(int(1e5)):
     if it % 5000 == 0:
         with torch.no_grad():
             xhat_samples = flow.final_density.sample((1000, ))
-            plt.scatter(xhat_samples[:, 0], xhat_samples[:, 1], s=5, c="red")
-            plt.scatter(x_samples[:, 0], x_samples[:, 1], s=5, c="blue")
+            plt.scatter(xhat_samples[:, 0], xhat_samples[:, 1], s=5, c="red", alpha=0.6)
+            plt.scatter(x_samples[:, 0], x_samples[:, 1], s=5, c="blue", alpha=0.6)
             #plt.xlim(0, 60)
             #plt.ylim(-15, 15)
             plt.show()
