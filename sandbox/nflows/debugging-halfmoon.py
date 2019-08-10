@@ -1,4 +1,19 @@
 # %%
+from IPython.core.display import HTML
+HTML("""
+<style>
+.output_png {
+    display: table-cell;
+    text-align: center;
+    vertical-align: middle;
+}
+.container { 
+    width:80% !important;
+}
+</style>
+""")
+
+# %%
 import numpy as np
 
 np.random.seed(0)
@@ -13,10 +28,6 @@ torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
 
 # %%
-from normalizing_flows import NormalizingFlow
-from normalizing_flows.flows import AffineFlow, PReLUFlow, StructuredAffineFlow, AffineLUFlow
-
-# %%
 import matplotlib.pyplot as plt
 import datetime
 
@@ -26,12 +37,11 @@ from tqdm import trange
 from tensorboardX import SummaryWriter
 
 # %%
-now_str = lambda : str(datetime.datetime.now()).replace(" ", "__")
-
+from normalizing_flows import NormalizingFlow
+from normalizing_flows.flows import AffineFlow, PReLUFlow, StructuredAffineFlow, AffineLUFlow
 
 # %%
-def count_parameters(model):
-    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+from thesis_utils import now_str, count_parameters, figure2tensor
 
 
 # %%
@@ -86,27 +96,11 @@ opt = optim.Adam(flow.parameters(), lr=1e-3)
 count_parameters(flow)
 
 # %%
-n_epochs = 10000
-bs = 512
-
-# %%
 writer = SummaryWriter(f"/workspace/sandbox/tensorboard_logs/{now_str()}")
 
 best_loss = torch.Tensor([float("+inf")])
 
 attempts = 0
-
-
-#for epoch in trange(n_epochs):
-#    batches = range((len(x_samples) - 1) // bs + 1)
-#    for i in batches:
-#        start_i = i * bs
-#        end_i = start_i + bs
-#        xb = x_samples[start_i:end_i]
-#        it = epoch*len(x_samples) + start_i
-
-#        opt.zero_grad()
-#        loss = -flow.final_density.log_prob(xb).mean()
 
 for it in trange(int(1e5)):
     opt.zero_grad()
@@ -132,26 +126,15 @@ for it in trange(int(1e5)):
     if it % 5000 == 0:
         with torch.no_grad():
             xhat_samples = flow.final_density.sample((1000, ))
-            plt.scatter(xhat_samples[:, 0], xhat_samples[:, 1], s=5, c="red", alpha=0.6)
-            plt.scatter(x_samples[:, 0], x_samples[:, 1], s=5, c="blue", alpha=0.6)
-            #plt.xlim(0, 60)
-            #plt.ylim(-15, 15)
-            plt.show()
-            print(loss)
+            f = plt.figure(figsize=(10, 10))
+            plt.xlim(-30, 30)
+            plt.ylim(-20, 20)
+            plt.scatter(xhat_samples[:, 0], xhat_samples[:, 1], s=5, c="red", alpha=0.5)
+            plt.scatter(x_samples[:, 0], x_samples[:, 1], s=5, c="blue", alpha=0.5)
+            writer.add_image("distributions", figure2tensor(f), it)
+            plt.close(f)
 
-    #    if it % 100 == 0:
-    #        f = plt.figure(figsize=(20, 20))
-    #        xhat_samples = flow.final_density.sample((1000, ))
-    #        plt.scatter(xhat_samples[:, 0], xhat_samples[:, 1], s=5, c="red")
-    #        plt.xlim(-5, 40)
-    #        plt.ylim(-15, 15)
-    #        plt.title(f"{loss.detach().numpy()}")
-    #        plt.savefig(f"to_gif/it_{it}.png")
-    #        plt.close()
     opt.step()
-
-# %%
-loss
 
 # %%
 flow = best_flow
