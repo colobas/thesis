@@ -4,7 +4,6 @@ PKG_FOLDER="$(pwd)/packages"
 SANDBOX_FOLDER="$(pwd)/sandbox"
 TENSORBOARD_LOGS_FOLDER="$(pwd)/sandbox/tensorboard_logs"
 
-#nvidia-docker run -it --rm \
 xhost +
 optirun -b primus nvidia-docker run -it --rm \
     -v $PKG_FOLDER:/workspace/packages \
