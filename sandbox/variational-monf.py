@@ -77,7 +77,14 @@ class VariationalMixture(nn.Module):
         self.n_components = len(components)
 
         self.log_prior = torch.Tensor([1/len(components)]*len(components)).log()
-
+    
+    def to(self, device="cuda:0"):
+        super(VariationalMixture, self).to(device)
+        for component in self.components:
+            component.to(device)
+        
+        self.log_prior = self.log_prior.to(device)
+        
     def forward(self, x, T=1):
         x = self.encoder(x)
         return F.softmax(x/T, dim=1)
@@ -192,7 +199,7 @@ class VariationalMixture(nn.Module):
         return best_loss, best_params
 
 # %%
-X, c = make_pinwheel_data(0.3, 0.05, 3, 1000, 0.25)
+X, c = make_pinwheel_data(0.3, 0.05, 3, 256, 0.25)
 X = torch.Tensor(X)
 c = torch.Tensor(c)
 
@@ -223,6 +230,10 @@ mixture = VariationalMixture(
 
 # %%
 count_parameters(mixture)
+
+# %%
+mixture.to("cuda:0")
+X = X.to("cuda:0")
 
 # %%
 n_epochs = 100000
