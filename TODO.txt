@@ -1,0 +1,19 @@
+# is it too slow?
+- profile simple-halfmoon
+- profile variational-mog
+- think about the profiling results
+- move to inesc
+
+# batch normalization
+- can speed up learning
+
+# weight sharing
+- can also speed up learning
+- it makes sense, intuitively
+
+# real-nvp
+- is there a usable/portable pytorch implementation?
+- is it well implemented?
+- profile it
+- mixture of real-nvps
+
