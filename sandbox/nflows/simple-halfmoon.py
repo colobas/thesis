@@ -38,7 +38,7 @@ from tensorboardX import SummaryWriter
 
 # %%
 from normalizing_flows import NormalizingFlow
-from normalizing_flows.flows import AffineFlow, PReLUFlow, StructuredAffineFlow, AffineLUFlow
+from normalizing_flows.flows import PReLUFlow, StructuredAffineFlow
 
 # %%
 from thesis_utils import now_str, count_parameters, figure2tensor
@@ -96,7 +96,7 @@ opt = optim.Adam(flow.parameters(), lr=2e-3)
 count_parameters(flow)
 
 # %%
-n_epochs = 100000
+n_epochs = 50000
 bs = 512
 
 # %%
