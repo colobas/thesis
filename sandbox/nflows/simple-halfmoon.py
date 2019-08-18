@@ -83,11 +83,14 @@ colors[idx_3] = 3
 plt.scatter(X0[:, 0], X0[:, 1], s=5, c=colors)
 
 # %%
-flow = NormalizingFlow(
-    dim=2, 
-    blocks=([StructuredAffineFlow, PReLUFlow]*5 + [StructuredAffineFlow]),
-    base_density=base_dist,
-    flow_length=1
+blocks = sum(
+    [[StructuredAffineFlow(2), PReLUFlow(2)] for _ in range(5)] + [[StructuredAffineFlow(2)]],
+[])
+
+# %%
+flow = NormalizingFlow( 
+    *blocks,
+    base_dist=base_dist,
 )
 
 opt = optim.Adam(flow.parameters(), lr=2e-3)
@@ -115,7 +118,7 @@ for epoch in trange(n_epochs):
         it = epoch*len(batches) + i + 1
 
         opt.zero_grad()
-        loss = -flow.final_density.log_prob(xb).mean()
+        loss = -flow.log_prob(xb).mean()
 
         if loss <= 0:
             if attempts < 100:
@@ -136,7 +139,7 @@ for epoch in trange(n_epochs):
         writer.add_scalar("loss", loss, it)
     if epoch % 200 == 0:
         with torch.no_grad():
-            Xhat = flow.final_density.sample((1000, ))
+            Xhat = flow.sample(1000)
             f = plt.figure(figsize=(10, 10))
             plt.xlim(-30, 30)
             plt.ylim(-20, 20)
@@ -147,10 +150,10 @@ for epoch in trange(n_epochs):
             plt.close(f)
 
 # %%
-flow = best_flow
+# flow = best_flow
 
 # %%
-Xhat = flow.final_density.sample((1000, ))
+Xhat = flow.sample(1000)
 plt.scatter(X[:, 0], X[:, 1], s=5, c="blue", alpha=0.5)
 plt.scatter(Xhat[:, 0], Xhat[:, 1], s=5, c="red", alpha=0.5)
 plt.show()
