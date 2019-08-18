@@ -38,7 +38,7 @@ from tensorboardX import SummaryWriter
 
 # %%
 from normalizing_flows import NormalizingFlow
-from normalizing_flows.flows import AffineFlow, PReLUFlow, StructuredAffineFlow, AffineLUFlow
+from normalizing_flows.flows import PReLUFlow, StructuredAffineFlow
 
 # %%
 from thesis_utils import now_str, count_parameters, figure2tensor
@@ -83,14 +83,17 @@ colors[idx_3] = 3
 plt.scatter(X0[:, 0], X0[:, 1], s=5, c=colors)
 
 # %%
-flow = NormalizingFlow(
-    dim=2, 
-    blocks=([StructuredAffineFlow, PReLUFlow]*5 + [StructuredAffineFlow]),
-    base_density=base_dist,
-    flow_length=1
+blocks = sum(
+    [[StructuredAffineFlow(2), PReLUFlow(2)] for _ in range(5)] + [[StructuredAffineFlow(2)]],
+[])
+
+# %%
+flow = NormalizingFlow( 
+    *blocks,
+    base_dist=base_dist,
 )
 
-opt = optim.Adam(flow.parameters(), lr=1e-3)
+opt = optim.Adam(flow.parameters(), lr=5e-4)
 
 # %%
 count_parameters(flow)
@@ -300,31 +303,29 @@ shifts = [
 alphas = [0.8555014, 0.712254, 0.4994685, 0.37195796, 0.5392429]
 
 # %%
-flow = NormalizingFlow(
-    dim=2, 
-    blocks=([StructuredAffineFlow, PReLUFlow]*5 + [StructuredAffineFlow]),
-    base_density=base_dist,
-    flow_length=1
+flow = NormalizingFlow( 
+    *blocks,
+    base_dist=base_dist,
 )
 
 # %%
-for i in range(len(flow.bijectors)):
+for i in range(len(flow)):
     if i % 2 == 0:
-        flow.bijectors[i].L.data = torch.Tensor(_fill_triangular(Ls[i//2]))
-        flow.bijectors[i].V.data = Vs[i//2]
-        flow.bijectors[i].shift.data = torch.Tensor(shifts[i//2]).squeeze()
+        flow[i].L.data = torch.Tensor(_fill_triangular(Ls[i//2]))
+        flow[i].V.data = Vs[i//2]
+        flow[i].shift.data = torch.Tensor(shifts[i//2]).squeeze()
 
 # %%
 for i, alpha in enumerate(alphas):
-    flow.bijectors[i*2 + 1].alpha.data = torch.Tensor([alpha]).squeeze()
+    flow[i*2 + 1].alpha.data = torch.Tensor([alpha]).squeeze()
 
 # %%
-for i, bij in enumerate(flow.bijectors):
+for i, bij in enumerate(flow):
     if i % 2 == 0:
         print(bij.weights)
 
 # %%
-xhat_samples = flow.final_density.sample((1000, ))
+xhat_samples = flow.sample(1000)
 plt.scatter(xhat_samples[:, 0], xhat_samples[:, 1], s=5, c="red")
 plt.scatter(x_samples[:, 0], x_samples[:, 1], s=5, c="blue")
 #plt.xlim(0, 60)
@@ -369,34 +370,43 @@ def make_vtlinvu(self):
 
 
 # %%
-for i, bij in enumerate(flow.bijectors):
+for i, bij in enumerate(flow):
     if i % 2 == 0:
         print(f"\nvt_linvu_{i}")
         print(make_cap(bij).detach())
 
 # %%
-log_abs_det_jacobian(flow.bijectors[-1], torch.Tensor([[1, 1]]), None)
+log_abs_det_jacobian(flow[-1], torch.Tensor([[1, 1]]), None)
 
 # %%
-flow.bijectors[-1].log_abs_det_jacobian(torch.Tensor([[1, 1]]), None)
+flow[-1].log_abs_det_jacobian(torch.Tensor([[1, 1]]), None)
 
 # %%
 x = torch.Tensor(X0)
 
 # %%
-for i, bij in enumerate(flow.bijectors):
+for i, bij in enumerate(flow):
     if i % 2 == 0:
         print(bij.log_abs_det_jacobian(torch.Tensor([[1, 1]]), None))
 
 # %%
--flow.final_density.log_prob(torch.Tensor([[1, 1]]))
+-flow.log_prob(torch.Tensor([[1, 1]]))
 
 # %%
-flow.transforms.log_abs_det_jacobian(torch.Tensor([[1, 1]]), None)
+_, log_abs_det = flow.forward(torch.Tensor([[1, 1]]))
+log_abs_det
 
 # %%
-flow.final_density.log_prob(x_samples).mean()
+flow.log_prob(x_samples).mean()
 
 # %%
+z_samples = flow.base_dist.sample((1000,))
+x_samples, log_abs_det_fw = flow.forward(z_samples)
+
+log_abs_det_fw
+
+# %%
+zhat, log_abs_det_bw = flow.inverse(x_samples)
+log_abs_det_bw
 
 # %%
