@@ -103,7 +103,7 @@ n_epochs = 50000
 bs = 512
 
 # %%
-writer = SummaryWriter(f"/workspace/sandbox/tensorboard_logs/{now_str()}")
+writer = SummaryWriter(f"./tensorboard_logs/{now_str()}")
 
 best_loss = torch.Tensor([float("+inf")])
 
@@ -159,7 +159,7 @@ plt.scatter(Xhat[:, 0], Xhat[:, 1], s=5, c="red", alpha=0.5)
 plt.show()
 
 # %%
-n_flows = len(flow.bijectors)
+n_flows = len(flow)
 
 f, axs = plt.subplots(
     n_flows + 1,
@@ -173,7 +173,7 @@ axs[0].scatter(X0[:, 0], X0[:, 1], s=5, c=colors)
 
 cur_x = X0
 
-for ax, bij in zip(axs[1:], flow.bijectors[:n_flows+1]):
+for ax, bij in zip(axs[1:], [flow[i] for i in range(n_flows)]):
     cur_x = bij(torch.Tensor(cur_x)).detach().numpy()
     ax.scatter(cur_x[:, 0], cur_x[:, 1], s=5, c=colors)
     
@@ -211,7 +211,7 @@ f, axs = plt.subplots(
 )
 
 cur_z = z
-prev_density = (flow.base_density
+prev_density = (flow.base_dist
                     .log_prob(torch.Tensor(cur_z))
                     .sum(dim=1)
                     .exp().detach())
@@ -220,7 +220,7 @@ xx, yy, zz = get_meshes(cur_z, prev_density)
 
 axs[0].contourf(xx, yy, zz, 50, cmap='rainbow')
 
-for ax, bij in zip(axs[1:], flow.bijectors[:n_flows+1]):
+for ax, bij in zip(axs[1:], [flow[i] for i in range(n_flows)]):
     cur_z = bij(torch.Tensor(cur_z)).detach().numpy()
     
     prev_density = get_density(cur_z, prev_density, bij)
@@ -231,3 +231,5 @@ plt.show()
 
 # %%
 list(flow.named_parameters())
+
+# %%
