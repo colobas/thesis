@@ -1,19 +1,4 @@
 # %%
-from IPython.core.display import HTML
-HTML("""
-<style>
-.output_png {
-    display: table-cell;
-    text-align: center;
-    vertical-align: middle;
-}
-.container { 
-    width:80% !important;
-}
-</style>
-""")
-
-# %%
 import numpy as np
 
 np.random.seed(0)
@@ -38,78 +23,87 @@ from tensorboardX import SummaryWriter
 
 # %%
 from normalizing_flows import NormalizingFlow
-from normalizing_flows.flows import PReLUFlow, StructuredAffineFlow, BatchNormFlow
+from normalizing_flows.flows import CouplingLayerFlow, BatchNormFlow
 
-# %%
 from thesis_utils import now_str, count_parameters, figure2tensor
-
-
-# %%
-def gen_samples(batch_size=512):
-    x2_dist = distrib.Normal(loc=0., scale=4.)
-    x2_samples = x2_dist.sample((batch_size,))
-
-    x1 = distrib.Normal(loc=.25 * (x2_samples.pow(2)),
-                  scale=torch.ones((batch_size,)))
-
-    x1_samples = x1.sample()
-    return torch.stack([x1_samples, x2_samples]).t()
-
-X = gen_samples(512)
-
-# %%
-plt.scatter(X[:, 0], X[:, 1], s=5)
-plt.show()
 
 # %%
 base_dist = distrib.Normal(loc=torch.zeros(2), scale=torch.ones(2))
 
 # %%
-X0 = base_dist.sample((1000,)).numpy()
+mask = torch.arange(2) % 2
+blocks = [
+    CouplingLayerFlow(
+        dim=2,
+        hidden_size=3,
+        n_hidden=2,
+        mask=mask
+    )
+]
+
+true_flow = NormalizingFlow( 
+    *blocks,
+    base_dist=base_dist,
+)
 
 # %%
-colors = np.zeros(len(X0))
-
-idx_0 = np.logical_and(X0[:, 0] < 0, X0[:, 1] < 0)
-colors[idx_0] = 0
-idx_1 = np.logical_and(X0[:, 0] >= 0, X0[:, 1] < 0)
-colors[idx_1] = 1
-idx_2 = np.logical_and(X0[:, 0] >= 0, X0[:, 1] >= 0)
-colors[idx_2] = 2
-idx_3 = np.logical_and(X0[:, 0] < 0, X0[:, 1] >= 0)
-colors[idx_3] = 3
+true_flow[0].s[0]._parameters
 
 # %%
-plt.scatter(X0[:, 0], X0[:, 1], s=5, c=colors)
+true_flow[0].s[0]._parameters["weight"].data = torch.Tensor([[1], [1], [1]])
+true_flow[0].s[2]._parameters["weight"].data = torch.Tensor([[1, 0, 0], 
+                                                             [0, 1, 0], 
+                                                             [0, 0, 1]])
+true_flow[0].s[0]._parameters["bias"].data = torch.Tensor([0, 0, 0])
+true_flow[0].s[2]._parameters["bias"].data = torch.Tensor([0, 0, 0])
+
+true_flow[0].t[0]._parameters["weight"].data = torch.Tensor([[-1], [1], [0.5]])
+true_flow[0].t[2]._parameters["weight"].data = torch.Tensor([[100, 0, 0], 
+                                                             [0, 1, 0], 
+                                                             [0, 0, -100]])
+true_flow[0].t[0]._parameters["bias"].data = torch.Tensor([0, 0, 0])
+true_flow[0].t[2]._parameters["bias"].data = torch.Tensor([0, 0, 0])
 
 # %%
-blocks = sum(
-    [[StructuredAffineFlow(2), PReLUFlow(2), BatchNormFlow(2)] for _ in range(5)] + [[StructuredAffineFlow(2)]],
-[])
+with torch.no_grad():
+    X = true_flow.sample(1000)
 
 # %%
+plt.scatter(X[:,0], X[:,1], s=5)
+plt.show()
+
+# %%
+mask = torch.arange(2) % 2
+blocks = [
+    CouplingLayerFlow(
+        dim=2,
+        hidden_size=3,
+        n_hidden=2,
+        mask=mask
+    )
+]
+
 flow = NormalizingFlow( 
     *blocks,
     base_dist=base_dist,
 )
 
-opt = optim.Adam(flow.parameters(), lr=5e-3)
+opt = optim.Adam(flow.parameters(), lr=1e-4)
 
 # %%
 count_parameters(flow)
 
 # %%
-n_epochs = 150
-bs = 64
+n_epochs = 100000
+bs = 512
 
 # %%
-writer = SummaryWriter(f"../tensorboard_logs/{now_str()}")
+writer = SummaryWriter(f"./tensorboard_logs/{now_str()}")
 
 best_loss = torch.Tensor([float("+inf")])
 
-attempts = 0
+#attempts = 0
 
-flow.train()
 for epoch in trange(n_epochs):
     batches = range((len(X) - 1) // bs + 1)
     for i in batches:
@@ -118,20 +112,20 @@ for epoch in trange(n_epochs):
         xb = X[start_i:end_i]
         it = epoch*len(batches) + i + 1
 
-        opt.zero_grad()    
+        opt.zero_grad()
         loss = -flow.log_prob(xb).mean()
 
-        if loss <= 0:
-            if attempts < 100:
-                attempts += 1
-                continue
-            else:
-                print("Loss has diverged, halting train and not backpropagating")
-                break
+        #if loss <= 0:
+        #    if attempts < 100:
+        #        attempts += 1
+        #        continue
+        #    else:
+        #        print("Loss has diverged, halting train and not backpropagating")
+        #        break
 
         if loss <= best_loss:
             best_loss = loss
-            #best_flow = deepcopy(flow)#
+            best_flow_params = flow.state_dict()
 
         loss.backward()
         opt.step()
@@ -149,20 +143,21 @@ for epoch in trange(n_epochs):
             plt.scatter(X[:, 0], X[:, 1], s=5, c="blue", alpha=0.5)
             writer.add_image("distributions", figure2tensor(f), it)
             plt.close(f)
-            
+
+# %%
+loss
+
+# %%
 flow.eval()
-
-# %%
-#flow = best_flow
-
-# %%
-Xhat = flow.sample(1000)
-plt.scatter(X[:, 0], X[:, 1], s=5, c="blue", alpha=0.5)
-plt.scatter(Xhat[:, 0], Xhat[:, 1], s=5, c="red", alpha=0.5)
+xhat_samples = flow.sample(1000)
+plt.scatter(xhat_samples[:, 0], xhat_samples[:, 1], s=5, c="red")
+plt.scatter(X[:, 0], X[:, 1], s=5, c="blue")
+#plt.xlim(0, 60)
+#plt.ylim(-15, 15)
 plt.show()
 
 # %%
-n_flows = len(flow.bijectors)
+n_flows = len(flow.net)
 
 f, axs = plt.subplots(
     n_flows + 1,
@@ -176,7 +171,7 @@ axs[0].scatter(X0[:, 0], X0[:, 1], s=5, c=colors)
 
 cur_x = X0
 
-for ax, bij in zip(axs[1:], flow.bijectors[:n_flows+1]):
+for ax, bij in zip(axs[1:], [flow.net[i] for i in range(n_flows)]):
     cur_x = bij(torch.Tensor(cur_x)).detach().numpy()
     ax.scatter(cur_x[:, 0], cur_x[:, 1], s=5, c=colors)
     
@@ -234,3 +229,45 @@ plt.show()
 
 # %%
 list(flow.named_parameters())
+
+# %%
+z, log_abs_det_jacobian = flow.inverse(X)
+
+
+# %%
+def inverse(self, x):
+    log_abs_dets = []
+    z_cur = x
+    for flow in reversed(self):
+        z_prev = flow.inverse(z_cur)
+        log_abs_dets.append(
+            -flow.log_abs_det_jacobian(z_prev, z_cur)
+        )
+        z_cur = z_prev
+
+    return z_prev, log_abs_dets
+
+with torch.no_grad():
+    z, log_abs_dets = inverse(flow.net, X)
+
+# %%
+plt.scatter(z[:, 0].numpy(), z[:, 1].numpy(), s=5)
+plt.show()
+
+# %%
+sum(log_abs_dets)
+
+# %%
+with torch.no_grad():
+    lp = flow.base_dist.log_prob(z)
+
+# %%
+lp.sum(dim=1)
+
+# %%
+(lp.sum(dim=1) + log_abs_det_jacobian).mean()
+
+# %%
+flow.log_prob(X).mean()
+
+# %%

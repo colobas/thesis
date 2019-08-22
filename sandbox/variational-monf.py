@@ -20,10 +20,10 @@ from tqdm import trange
 from tensorboardX import SummaryWriter
 
 from normalizing_flows import NormalizingFlow
-from normalizing_flows.flows import PReLUFlow, StructuredAffineFlow
+from normalizing_flows.flows import PReLUFlow, StructuredAffineFlow, BatchNormFlow
 
 # %%
-from thesis_utils import now_str, count_parameters, figure2tensor
+from thesis_utils import now_str, count_parameters, figure2tensor, torch_onehot
 
 # %%
 import io
@@ -56,6 +56,17 @@ def make_pinwheel_data(radial_std, tangential_std, num_classes, num_per_class, r
 
 
 # %%
+def module_grad_health(module):
+    flat = torch.cat([param.grad.abs().flatten()
+                      for param in module.parameters()])
+    return (
+        flat.median(),
+        flat.max(),
+        flat.min()
+    )
+
+
+# %%
 #debug = False
 #debug_str = io.StringIO("")
 
@@ -66,8 +77,8 @@ class VariationalMixture(nn.Module):
         self.xdim = xdim
 
         net_modules = (
-          [nn.Linear(xdim, hdim), nn.LeakyReLU()] +
-          sum([[nn.Linear(hdim, hdim), nn.LeakyReLU()] for i in range(n_hidden)], []) +
+          [nn.Linear(xdim, hdim), nn.ReLU(), nn.BatchNorm1d(hdim)] +
+          sum([[nn.Linear(hdim, hdim), nn.ReLU(), nn.BatchNorm1d(hdim)] for i in range(n_hidden)], []) +
           [nn.Linear(hdim, n_classes)]
         )
 
@@ -134,13 +145,14 @@ class VariationalMixture(nn.Module):
 
         log_probs = 0
         for k in range(self.n_components):
-            log_probs += q[:, k] * self.components[k].log_prob(x)
+            log_probs = log_probs + q[:, k] * self.components[k].log_prob(x)
 
         log_probs = log_probs.sum()
         prior_crossent = (q * self.log_prior).sum(dim=1).sum()
         q_entropy = - (q * (q + 1e-6).log()).sum(dim=1).sum()
 
-        return log_probs + prior_crossent + q_entropy
+        return log_probs, prior_crossent, q_entropy
+
 
     def fit(self, X, n_epochs=1, bs=100, opt=None, temperature_schedule=None,
             clip_grad=None, verbose=False, writer=None, is_pretraining=False):
@@ -168,12 +180,13 @@ class VariationalMixture(nn.Module):
                 start_i = i * bs
                 end_i = start_i + bs
                 xb = X[start_i:end_i]
-                n_iter = epoch*len(X) + start_i
+                n_iter = epoch*((len(X) - 1) // bs + 1) + i
                 
                 if is_pretraining:
                     loss = self.pretrain_loss(xb)
                 else:
-                    loss = - self.elbo(xb, temperature_schedule(n_iter))
+                    log_probs,prior_crossent,q_entropy = self.elbo(xb, temperature_schedule(n_iter))
+                    loss = -(log_probs + prior_crossent + q_entropy)
                 if loss <= best_loss:
                     best_loss = loss.item()
                     if is_pretraining:
@@ -187,8 +200,15 @@ class VariationalMixture(nn.Module):
                         if is_pretraining:
                             writer.add_scalar('losses/pretraining_loss', loss, n_iter)
                         else:
-                            writer.add_scalar('losses/loss', loss, n_iter)
+                            writer.add_scalar('losses/log_probs', log_probs, n_iter)
+                            writer.add_scalar('losses/prior_crossent', prior_crossent, n_iter)
+                            writer.add_scalar('losses/q_entropy', q_entropy, n_iter)
                             writer.add_scalar('misc/temperature', temperature_schedule(n_iter), n_iter)
+                            
+                loss.backward()
+                # print(f"encoder: {module_grad_health(self.encoder)}")
+                # for i, comp in enumerate(self.components):
+                #     print(f"nf_{i}: {module_grad_health(comp)}")
 
                 if clip_grad is not None:
                     torch.nn.utils.clip_grad_norm_(self.parameters(), clip_grad)
@@ -199,54 +219,64 @@ class VariationalMixture(nn.Module):
         return best_loss, best_params
 
 # %%
-X, c = make_pinwheel_data(0.3, 0.05, 3, 256, 0.25)
+X, C = make_pinwheel_data(0.3, 0.05, 3, 512, 0.25)
 X = torch.Tensor(X)
-c = torch.Tensor(c)
+C = torch.Tensor(C)
 
 plt.figure(figsize=(10, 10))
-plt.scatter(X[:,0].numpy(), X[:,1].numpy(), c=c.numpy(), s=5)
+plt.scatter(X[:,0].numpy(), X[:,1].numpy(), c=C.numpy(), s=5)
 plt.show()
+
+
+# %%
+def make_nf(n_blocks, base_dist):
+    blocks = []
+    for _ in range(n_blocks):
+        blocks += [StructuredAffineFlow(2), PReLUFlow(2), BatchNormFlow(2)]
+    blocks += [StructuredAffineFlow(2)]
+
+    return NormalizingFlow( 
+        *blocks,
+        base_dist=base_dist,
+    )
+
 
 # %%
 xdim = 2
 hdim = 2
 n_hidden = 3
 n_classes = 3
-
-n_mlp_flows = 5
+n_flow_blocks = 5
 
 mixture = VariationalMixture(
     xdim=xdim,
     hdim=hdim,
     n_hidden=n_hidden,
     n_classes=n_classes,
-    components=[NormalizingFlow(
-        dim=2, 
-        blocks=([StructuredAffineFlow, PReLUFlow]*n_mlp_flows + [StructuredAffineFlow]),
-        base_density=distrib.Normal(loc=torch.zeros(2), scale=torch.ones(2)),
-        flow_length=1
-    ) for _ in range(n_classes)],
+    components=[make_nf(5, distrib.Normal(loc=torch.zeros(2), scale=torch.ones(2)))
+                for _ in range(n_classes)],
 )
 
 # %%
 count_parameters(mixture)
 
 # %%
-mixture.to("cuda:0")
-X = X.to("cuda:0")
+#mixture.to("cuda:1")
+#X = X.to("cuda:1")
 
 # %%
-n_epochs = 100000
-bs = 512
-opt = optim.Adam(mixture.parameters(), lr=0.0005)
-writer = SummaryWriter(f"/workspace/runs/{now_str()}")
+n_epochs = 2000
+bs = 64
+opt = optim.Adam(mixture.parameters(), lr=0.01)
+writer = SummaryWriter(f"./tensorboard_logs/{now_str()}")
 
 best_loss, best_params = mixture.fit(X,
     n_epochs=n_epochs,
     bs=bs,
     opt=opt,
-    temperature_schedule=None,
-    clip_grad=1e5,
+    temperature_schedule=lambda t: max(1e-6, np.exp(-1e-4 * t)),
+    #temperature_schedule=lambda t: 1,
+    clip_grad=1e6,
     verbose=True,
     writer=writer,
     is_pretraining=False)
@@ -255,7 +285,11 @@ best_loss, best_params = mixture.fit(X,
 mixture.load_state_dict(best_params)
 
 # %%
-x = np.linspace(-20, 20, 1000)
+#mixture.to("cpu")
+#X = X.to("cpu")
+
+# %%
+x = np.linspace(-1, 1, 1000)
 z = np.array(np.meshgrid(x, x)).transpose(1, 2, 0)
 z = np.reshape(z, [z.shape[0] * z.shape[1], -1])
 
@@ -292,72 +326,27 @@ with torch.no_grad():
     
 ax.scatter(X[:, 0].numpy(), X[:, 1].numpy(), c=c, s=5)
 
-plt.xlim(-20, 20)
-plt.ylim(-20, 20)
 plt.show()
 
+# %%
+q = torch_onehot(C, 3)
 
 # %%
-def torch_onehot(y, n_cat):
-    return (
-        torch.zeros(len(y), n_cat)
-            .scatter_(1, y.type(torch.LongTensor).unsqueeze(-1), 1)
-    )
+f, ax = plt.subplots(1, 1, figsize=(10, 10))
 
+zz = np.argmax(densities, axis=1).reshape([1000, 1000])
 
-# %%
-q = torch_onehot(c, 3)
+ax.contourf(xx, yy, zz, 50, cmap="rainbow")
 
-# %%
-with torch.no_grad():
-    d = mixture._centroid_distances(X, q)
-
-# %%
-colors = torch_onehot(c, 3).numpy()
-
-
-# %%
-
-# %%
-colors = np.hstack((torch_onehot(c, 3).numpy(), (d/d.max()).numpy().reshape(-1, 1)))
-
-plt.scatter(X[:, 0].numpy(), X[:, 1].numpy(), color=colors)
-
-# %%
-
-# %%
-
-# %%
-n_epochs = 200
-bs = 64
-opt = optim.Adam(mixture.parameters(), lr=0.01)
-writer = SummaryWriter(f"/workspace/runs/{now_str()}")
-
-best_loss, best_params = mixture.fit(X,
-    n_epochs=n_epochs,
-    bs=bs,
-    opt=opt,
-    temperature_schedule=lambda t: max(0.01, np.exp(-1e-5 * t)),
-    clip_grad=1e3,
-    verbose=True,
-    writer=writer)
-
-# %%
-mixture.load_state_dict(best_params)
-
-# %%
-colors = ["red", "green", "blue"]
-
+colors = ["yellow", "green", "black"]
 with torch.no_grad():
     for i, component in enumerate(mixture.components):
-        X_k = distrib.LowRankMultivariateNormal(component.loc,
-                                                component.sqrt_cov_factor ** 2 + 0.1,
-                                                component.sqrt_cov_diag ** 2 + 0.1).sample((500,))
+        X_k = component.sample(500)
 
-        plt.scatter(X_k[:, 0].numpy(), X_k[:, 1].numpy(), c=colors[i],
-                    s=5)
+        ax.scatter(X_k[:, 0].numpy(), X_k[:, 1].numpy(), c=colors[i],
+            s=5)
 
-    plt.show()
+plt.show()
 
 # %%
 x = np.linspace(-20, 20, 1000)
@@ -384,23 +373,3 @@ plt.tight_layout(h_pad=1)
 plt.show()
 
 # %%
-f, ax = plt.subplots(1, 1, figsize=(10, 10))
-
-zz = np.argmax(densities, axis=1).reshape([1000, 1000])
-
-ax.contourf(xx, yy, zz, 50, cmap="rainbow")
-
-colors = ["yellow", "white", "black"]
-
-with torch.no_grad():
-    for i, component in enumerate(mixture.components):
-        X_k = distrib.LowRankMultivariateNormal(component.loc,
-                                                component.sqrt_cov_factor ** 2 + 0.1,
-                                                component.sqrt_cov_diag ** 2 + 0.1).sample((500,))
-
-        ax.scatter(X_k[:, 0].numpy(), X_k[:, 1].numpy(), c=colors[i],
-                    s=5)
-
-plt.xlim(-20, 20)
-plt.ylim(-20, 20)
-plt.show()

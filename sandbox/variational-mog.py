@@ -1,18 +1,4 @@
 # %%
-try:
-    from IPython import get_ipython
-    # if IPython is installed but we're not running inside a notebook,
-    # `get_ipython` will return `None`, and we proceed as if this were
-    # a python module/script
-    ipython = get_ipython()
-except ModuleNotFoundError:
-    ipython = None
-
-if ipython is not None:
-    ipython.magic("%load_ext autoreload")
-    ipython.magic("%autoreload 2")
-
-# %%
 import numpy as np
 
 np.random.seed(0)
@@ -36,7 +22,7 @@ from tensorboardX import SummaryWriter
 from lowrank_mv_gaussian import MultivariateGaussian
 
 # %%
-now_str = lambda : str(datetime.datetime.now()).replace(" ", "__")
+from thesis_utils import now_str, count_parameters
 
 # %%
 def count_parameters(model):
@@ -58,8 +44,8 @@ class VariationalMixture(nn.Module):
         self.xdim = xdim
 
         net_modules = (
-          [nn.Linear(xdim, hdim), nn.LeakyReLU()] +
-          sum([[nn.Linear(hdim, hdim), nn.LeakyReLU()] for i in range(n_hidden)], []) +
+          [nn.Linear(xdim, hdim), nn.ReLU(), nn.BatchNorm1d(hdim)] +
+          sum([[nn.Linear(hdim, hdim), nn.ReLU(), nn.BatchNorm1d(hdim)] for i in range(n_hidden)], []) +
           [nn.Linear(hdim, n_classes)]
         )
 
@@ -77,7 +63,7 @@ class VariationalMixture(nn.Module):
     def update_mixture_weights(self, x):
         num = torch.zeros(len(x), len(components))
         for k in range(self.n_components):
-            num[:, k] = (self.n_components[k].log_prob(x) + self.log_prior[k]).exp()
+            num[:, k] = (self.components[k].log_prob(x) + self.log_prior[k]).exp()
 
         num = num / num.sum(dim=1)
 
@@ -119,7 +105,7 @@ class VariationalMixture(nn.Module):
 
         log_probs = 0
         for k in range(self.n_components):
-            log_probs += q[:, k] * self.components[k].log_prob(x)
+            log_probs = log_probs + q[:, k] * self.components[k].log_prob(x)
 
         log_probs = log_probs.sum()
         prior_crossent = (q * self.log_prior).sum(dim=1).sum()
@@ -138,7 +124,7 @@ class VariationalMixture(nn.Module):
 #        print(q, file=debug_str)
 #        print(list(self.components.named_parameters()), file=debug_str)
 
-        return log_probs + prior_crossent + q_entropy
+        return log_probs,prior_crossent,q_entropy
 
     def fit(self, X, n_epochs=1, bs=100, opt=None, temperature_schedule=None,
             clip_grad=None, verbose=False, writer=None, is_pretraining=False):
@@ -166,12 +152,13 @@ class VariationalMixture(nn.Module):
                 start_i = i * bs
                 end_i = start_i + bs
                 xb = X[start_i:end_i]
-                n_iter = epoch*len(X) + start_i
+                n_iter = epoch*((len(X) - 1) // bs + 1) + i
                 
                 if is_pretraining:
                     loss = self.pretrain_loss(xb)
                 else:
-                    loss = - self.elbo(xb, temperature_schedule(n_iter))
+                    log_probs,prior_crossent,q_entropy = self.elbo(xb, temperature_schedule(n_iter))
+                    loss = -(log_probs + prior_crossent + q_entropy)
                 if loss <= best_loss:
                     best_loss = loss.item()
                     if is_pretraining:
@@ -185,12 +172,15 @@ class VariationalMixture(nn.Module):
                         if is_pretraining:
                             writer.add_scalar('losses/pretraining_loss', loss, n_iter)
                         else:
-                            writer.add_scalar('losses/loss', loss, n_iter)
+                            #writer.add_scalar('losses/loss', loss, n_iter)
+                            writer.add_scalar('losses/log_probs', log_probs, n_iter)
+                            writer.add_scalar('losses/prior_crossent', prior_crossent, n_iter)
+                            writer.add_scalar('losses/q_entropy', q_entropy, n_iter)
                             writer.add_scalar('misc/temperature', temperature_schedule(n_iter), n_iter)
 
 
-#                get_dot = register_hooks(loss)
-#                loss.backward()
+#               get_dot = register_hooks(loss)
+                loss.backward()
 
 #                for n,p in self.named_parameters():
 #                    if torch.any(p.grad != p.grad):
@@ -200,6 +190,9 @@ class VariationalMixture(nn.Module):
 #                        global debug
 #                        debug = True
 
+#                for k in range(self.n_components):
+#                    print(self.components[k].loc.grad)
+                
                 if clip_grad is not None:
                     torch.nn.utils.clip_grad_norm_(self.parameters(), clip_grad)
 
@@ -241,10 +234,10 @@ def gen_samples():
 
     return samples[ix], c[ix]
 
-X, c = gen_samples()
+X, C = gen_samples()
 
 plt.figure(figsize=(10, 10))
-plt.scatter(X[:,0].numpy(), X[:,1].numpy(), c=c.numpy(), s=5)
+plt.scatter(X[:,0].numpy(), X[:,1].numpy(), c=C.numpy(), s=5)
 plt.xlim(-20, 20)
 plt.ylim(-20, 20)
 plt.show()
@@ -264,109 +257,101 @@ mixture = VariationalMixture(
 )
 
 # %%
-n_epochs = 1000
-bs = 64
-opt = optim.Adam(mixture.encoder.parameters(), lr=0.01)
-writer = SummaryWriter(f"/workspace/runs/{now_str()}")
-
-best_loss, best_params = mixture.fit(X,
-    n_epochs=n_epochs,
-    bs=bs,
-    opt=opt,
-    temperature_schedule=None,
-    clip_grad=1e5,
-    verbose=True,
-    writer=writer,
-    is_pretraining=True)
-
-# %%
-mixture.encoder.load_state_dict(best_params)
+#n_epochs = 1000
+#bs = 64
+#opt = optim.Adam(mixture.encoder.parameters(), lr=0.01)
+#writer = SummaryWriter(f"./tensorboard_logs/{now_str()}")
+#
+#best_loss, best_params = mixture.fit(X,
+#    n_epochs=n_epochs,
+#    bs=bs,
+#    opt=opt,
+#    temperature_schedule=None,
+#    clip_grad=1e5,
+#    verbose=True,
+#    writer=writer,
+#    is_pretraining=True)
 
 # %%
-x = np.linspace(-20, 20, 1000)
-z = np.array(np.meshgrid(x, x)).transpose(1, 2, 0)
-z = np.reshape(z, [z.shape[0] * z.shape[1], -1])
-
-with torch.no_grad():
-    densities = mixture.forward(torch.Tensor(z)).numpy()
-
-mesh = z.reshape([1000, 1000, 2]).transpose(2, 0, 1)
-xx = mesh[0]
-yy = mesh[1]
-
-f, axs = plt.subplots(1, 3, figsize=(30, 10))
-
-for i, ax in enumerate(axs):
-    zz = densities[:,i].reshape([1000, 1000])
-    ax.set_title(f"$q(z={i} | x)$")
-    cb = ax.contourf(xx, yy, zz, 50, cmap="rainbow")
-
-
-plt.colorbar(cb)
-plt.tight_layout(h_pad=1)
-plt.show()
+#mixture.encoder.load_state_dict(best_params)
 
 # %%
-f, ax = plt.subplots(1, 1, figsize=(10, 10))
-
-zz = np.argmax(densities, axis=1).reshape([1000, 1000])
-
-ax.contourf(xx, yy, zz, 50, cmap="rainbow")
-
-colors = ["yellow", "white", "black"]
-
-with torch.no_grad():
-    c = [colors[i] for i in np.argmax(mixture.forward(X).numpy(), axis=1)]
-    
-ax.scatter(X[:, 0].numpy(), X[:, 1].numpy(), c=c, s=5)
-
-plt.xlim(-20, 20)
-plt.ylim(-20, 20)
-plt.show()
-
-
-# %%
-def torch_onehot(y, n_cat):
-    return (
-        torch.zeros(len(y), n_cat)
-            .scatter_(1, y.type(torch.LongTensor).unsqueeze(-1), 1)
-    )
-
+#x = np.linspace(-20, 20, 1000)
+#z = np.array(np.meshgrid(x, x)).transpose(1, 2, 0)
+#z = np.reshape(z, [z.shape[0] * z.shape[1], -1])
+#
+#with torch.no_grad():
+#    densities = mixture.forward(torch.Tensor(z)).numpy()
+#
+#mesh = z.reshape([1000, 1000, 2]).transpose(2, 0, 1)
+#xx = mesh[0]
+#yy = mesh[1]
+#
+#f, axs = plt.subplots(1, 3, figsize=(30, 10))
+#
+#for i, ax in enumerate(axs):
+#    zz = densities[:,i].reshape([1000, 1000])
+#    ax.set_title(f"$q(z={i} | x)$")
+#    cb = ax.contourf(xx, yy, zz, 50, cmap="rainbow")
+#
+#
+#plt.colorbar(cb)
+#plt.tight_layout(h_pad=1)
+#plt.show()
 
 # %%
-q = torch_onehot(c, 3)
+#f, ax = plt.subplots(1, 1, figsize=(10, 10))
+#
+#zz = np.argmax(densities, axis=1).reshape([1000, 1000])
+#
+#ax.contourf(xx, yy, zz, 50, cmap="rainbow")
+#
+#colors = ["yellow", "white", "black"]
+#
+#with torch.no_grad():
+#    c = [colors[i] for i in np.argmax(mixture.forward(X).numpy(), axis=1)]
+#    
+#ax.scatter(X[:, 0].numpy(), X[:, 1].numpy(), c=c, s=5)
+#
+#plt.xlim(-20, 20)
+#plt.ylim(-20, 20)
+#plt.show()
 
 # %%
-with torch.no_grad():
-    d = mixture._centroid_distances(X, q)
+#def torch_onehot(y, n_cat):
+#    return (
+#        torch.zeros(len(y), n_cat)
+#            .scatter_(1, y.type(torch.LongTensor).unsqueeze(-1), 1)
+#    )
 
 # %%
-colors = torch_onehot(c, 3).numpy()
+#q = torch_onehot(C, 3)
+
+# %%
+#with torch.no_grad():
+#    d = mixture._centroid_distances(X, q)
+
+# %%
+#colors = torch_onehot(C, 3).numpy()
 
 
 # %%
+#colors = np.hstack((torch_onehot(C, 3).numpy(), (d/d.max()).numpy().reshape(-1, 1)))
+#
+#plt.scatter(X[:, 0].numpy(), X[:, 1].numpy(), color=colors)
 
 # %%
-colors = np.hstack((torch_onehot(c, 3).numpy(), (d/d.max()).numpy().reshape(-1, 1)))
-
-plt.scatter(X[:, 0].numpy(), X[:, 1].numpy(), color=colors)
-
-# %%
-
-# %%
-
-# %%
-n_epochs = 200
+n_epochs = 50
 bs = 64
 opt = optim.Adam(mixture.parameters(), lr=0.01)
-writer = SummaryWriter(f"/workspace/runs/{now_str()}")
+writer = SummaryWriter(f"./tensorboard_logs/{now_str()}")
 
 best_loss, best_params = mixture.fit(X,
     n_epochs=n_epochs,
     bs=bs,
     opt=opt,
-    temperature_schedule=lambda t: max(0.01, np.exp(-1e-5 * t)),
-    clip_grad=1e3,
+    temperature_schedule=lambda t: max(0.01, np.exp(-1e-4 * t)),
+    clip_grad=1e5,
     verbose=True,
     writer=writer)
 
@@ -432,3 +417,5 @@ with torch.no_grad():
 plt.xlim(-20, 20)
 plt.ylim(-20, 20)
 plt.show()
+
+# %%

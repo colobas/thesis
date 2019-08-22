@@ -87,7 +87,6 @@ blocks = sum(
     [[StructuredAffineFlow(2), PReLUFlow(2)] for _ in range(5)] + [[StructuredAffineFlow(2)]],
 [])
 
-# %%
 flow = NormalizingFlow( 
     *blocks,
     base_dist=base_dist,
