@@ -9,6 +9,8 @@ import torch.distributions as distrib
 import torch.optim as optim
 import torch.nn.functional as F
 
+from torch.utils.data import DataLoader
+
 torch.manual_seed(0)
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
@@ -20,10 +22,11 @@ from tqdm import trange
 from tensorboardX import SummaryWriter
 
 from normalizing_flows import NormalizingFlow
-from normalizing_flows.flows import PReLUFlow, StructuredAffineFlow, BatchNormFlow
+from normalizing_flows.flows import PReLUFlow, AffineLUFlow, BatchNormFlow
 
 # %%
 from thesis_utils import now_str, count_parameters, figure2tensor, torch_onehot
+from thesis_utils import RAdam, Lookahead, Ranger
 
 # %%
 import io
@@ -64,6 +67,17 @@ def module_grad_health(module):
         flat.max(),
         flat.min()
     )
+
+
+# %%
+x = np.linspace(-1, 1, 1000)
+z = np.array(np.meshgrid(x, x)).transpose(1, 2, 0)
+z = np.reshape(z, [z.shape[0] * z.shape[1], -1])
+
+
+mesh = z.reshape([1000, 1000, 2]).transpose(2, 0, 1)
+xx = mesh[0]
+yy = mesh[1]
 
 
 # %%
@@ -110,35 +124,6 @@ class VariationalMixture(nn.Module):
         self.log_prior = (num.mean(dim=0) + 1e-6).log()
 
         return self.log_prior
-    
-    def _centroid_distances(self, X, q):
-        Xbar = (X.unsqueeze(1) * q.unsqueeze(-1)).sum(dim=0) / q.sum(dim=0).unsqueeze(-1)
-
-        diffs = (X.unsqueeze(1) - Xbar)
-
-        covs = ((diffs.unsqueeze(3) @ diffs.unsqueeze(2)) * 
-          q.unsqueeze(-1).unsqueeze(-1)).sum(dim=0) / (
-          q.sum(dim=0).unsqueeze(-1).unsqueeze(-1))
-                
-        return (((diffs ** 2 / (covs.diagonal(dim1=1, dim2=2) ** 2).unsqueeze(0))
-                  * q.unsqueeze(-1))
-                     .sum(dim=1)
-                     .sum(dim=1)
-                     .sqrt())
-        
-    
-    def pretrain_loss(self, X):
-        q = self.forward(X)
-        
-        distances = self._centroid_distances(X, q)
-        
-        qmean = q.mean(dim=0)
-        
-        return (0
-                + distances.mean()
-                - (q * (q + 1e-6).log()).mean() 
-                - (qmean * (qmean + 1e-6).log()).mean()
-        )
 
     def elbo(self, x, T=1):
         q = self.forward(x, T)
@@ -154,20 +139,15 @@ class VariationalMixture(nn.Module):
         return log_probs, prior_crossent, q_entropy
 
 
-    def fit(self, X, n_epochs=1, bs=100, opt=None, temperature_schedule=None,
-            clip_grad=None, verbose=False, writer=None, is_pretraining=False):
+    def fit(self, X, dataloader, n_epochs=1, opt=None,
+            temperature_schedule=None, clip_grad=None,
+            verbose=False, writer=None):
 
         best_loss = float("inf")
         best_params = dict()
 
-        if opt is None:
-            if is_pretraining:
-                opt = optim.Adam(self.encoder.parameters(), lr=0.01)
-            else:
-                opt = optim.Adam(self.parameters(), lr=0.001)
-
         if temperature_schedule is None:
-            temperature_schedule = lambda t: max(0.01, np.exp(-1e-4 * t))
+            temperature_schedule = lambda t: 1
 
         if verbose:
             epochs = trange(n_epochs, desc="epoch")
@@ -175,46 +155,55 @@ class VariationalMixture(nn.Module):
             epochs = range(n_epochs)
 
         for epoch in epochs:
-            batches = range((len(X) - 1) // bs + 1)
-            for i in batches:
-                start_i = i * bs
-                end_i = start_i + bs
-                xb = X[start_i:end_i]
-                n_iter = epoch*((len(X) - 1) // bs + 1) + i
+            for i, xb in enumerate(dataloader):
+                opt.zero_grad()
+                n_iter = epoch*((len(X) - 1) // dataloader.batch_size + 1) + i
+            
+                log_probs,prior_crossent,q_entropy = self.elbo(xb, temperature_schedule(n_iter))
+                loss = -(log_probs + prior_crossent + q_entropy)
                 
-                if is_pretraining:
-                    loss = self.pretrain_loss(xb)
-                else:
-                    log_probs,prior_crossent,q_entropy = self.elbo(xb, temperature_schedule(n_iter))
-                    loss = -(log_probs + prior_crossent + q_entropy)
+                if loss != loss:
+                    continue
+                
                 if loss <= best_loss:
                     best_loss = loss.item()
-                    if is_pretraining:
-                        best_params = self.encoder.state_dict()
-                    else:
-                        best_params = self.state_dict()
+                    best_params = self.state_dict()
 
                 # if we're writing to tensorboard
                 if writer is not None:
-                    if n_iter % 10 == 0:
-                        if is_pretraining:
-                            writer.add_scalar('losses/pretraining_loss', loss, n_iter)
-                        else:
-                            writer.add_scalar('losses/log_probs', log_probs, n_iter)
-                            writer.add_scalar('losses/prior_crossent', prior_crossent, n_iter)
-                            writer.add_scalar('losses/q_entropy', q_entropy, n_iter)
-                            writer.add_scalar('misc/temperature', temperature_schedule(n_iter), n_iter)
-                            
-                loss.backward()
-                # print(f"encoder: {module_grad_health(self.encoder)}")
-                # for i, comp in enumerate(self.components):
-                #     print(f"nf_{i}: {module_grad_health(comp)}")
+                    if n_iter % 20 == 0:
+                        writer.add_scalar('losses/log_probs', log_probs, n_iter)
+                        #writer.add_scalar('losses/prior_crossent', prior_crossent, n_iter)
+                        writer.add_scalar('losses/q_entropy', q_entropy, n_iter)
 
-                if clip_grad is not None:
-                    torch.nn.utils.clip_grad_norm_(self.parameters(), clip_grad)
+                loss.backward()
+                
+                #if n_iter % 1000:
+                #    with torch.no_grad():
+                #        densities = mixture.forward(torch.Tensor(z)).numpy()
+                #        f = plt.figure(figsize=(10, 10))
+                #        zz = np.argmax(densities, axis=1).reshape([1000, 1000])
+
+                #        plt.contourf(xx, yy, zz, 50, cmap="rainbow")
+
+                #        colors = ["yellow", "green", "black"]
+                #        with torch.no_grad():
+                #            for i, component in enumerate(mixture.components):
+                #                X_k = component.sample(500)
+
+                #                plt.scatter(X_k[:, 0].numpy(), X_k[:, 1].numpy(), c=colors[i],
+                #                    s=5)
+
+                #        plt.xlim(-1.1, 1.1)
+                #        plt.ylim(-1.1, 1.1)
+                #        writer.add_image("distributions", figure2tensor(f), n_iter)
+                #        plt.close(f)
+
+
+                #if clip_grad is not None:
+                #    torch.nn.utils.clip_grad_norm_(self.parameters(), clip_grad)
 
                 opt.step()
-                opt.zero_grad()
 
         return best_loss, best_params
 
@@ -232,8 +221,8 @@ plt.show()
 def make_nf(n_blocks, base_dist):
     blocks = []
     for _ in range(n_blocks):
-        blocks += [StructuredAffineFlow(2), PReLUFlow(2), BatchNormFlow(2)]
-    blocks += [StructuredAffineFlow(2)]
+        blocks += [AffineLUFlow(2), PReLUFlow(2), BatchNormFlow(2)]
+    blocks += [AffineLUFlow(2)]
 
     return NormalizingFlow( 
         *blocks,
@@ -243,7 +232,7 @@ def make_nf(n_blocks, base_dist):
 
 # %%
 xdim = 2
-hdim = 2
+hdim = 3
 n_hidden = 3
 n_classes = 3
 n_flow_blocks = 5
@@ -261,32 +250,55 @@ mixture = VariationalMixture(
 count_parameters(mixture)
 
 # %%
-#mixture.to("cuda:1")
-#X = X.to("cuda:1")
+#mixture.to("cuda:0")
+#X = X.to("cuda:0")
 
 # %%
-n_epochs = 2000
-bs = 64
-opt = optim.Adam(mixture.parameters(), lr=0.01)
-writer = SummaryWriter(f"./tensorboard_logs/{now_str()}")
+opt = optim.Adam([
+    {   #encoder params
+        "params": (v for k,v in mixture.named_parameters() if "encoder" in k),
+        "lr": 1e-4
+    },
+    {   #remaining params
+        "params": (v for k,v in mixture.named_parameters() if "encoder" not in k),
+        "lr": 1e-2
+    },
+])
 
-best_loss, best_params = mixture.fit(X,
-    n_epochs=n_epochs,
-    bs=bs,
-    opt=opt,
-    temperature_schedule=lambda t: max(1e-6, np.exp(-1e-4 * t)),
-    #temperature_schedule=lambda t: 1,
-    clip_grad=1e6,
-    verbose=True,
-    writer=writer,
-    is_pretraining=False)
+opt.zero_grad()
+
+
+# %%
+def train(n_epochs, bs, mixture):
+    writer = SummaryWriter(f"./tensorboard_logs/{now_str()}")
+
+    best_loss, best_params = mixture.fit(X,
+        dataloader=DataLoader(X, batch_size=bs, shuffle=True, num_workers=0),
+        n_epochs=n_epochs,
+        #bs=bs,
+        opt=opt,
+        #temperature_schedule=lambda t: np.exp(-5e-4 * t),
+        temperature_schedule=lambda t: 1,
+        clip_grad=1e3,
+        verbose=True,
+        writer=writer)
+
+    return best_loss, best_params
+
+
+# %%
+best_loss, best_params = train(
+    n_epochs=1000,
+    bs=64,
+    mixture=mixture
+)
 
 # %%
 mixture.load_state_dict(best_params)
 
 # %%
-#mixture.to("cpu")
-#X = X.to("cpu")
+mixture.to("cpu")
+X = X.to("cpu")
 
 # %%
 x = np.linspace(-1, 1, 1000)
@@ -348,6 +360,29 @@ with torch.no_grad():
 
 plt.show()
 
+
+# %%
+def inverse(self, x):
+    log_abs_det = []
+    z_cur = x
+    for flow in reversed(self):
+        z_prev = flow.inverse(z_cur)
+        log_abs_det.append(- flow.log_abs_det_jacobian(z_prev, z_cur))
+        z_cur = z_prev
+
+    return log_abs_det
+
+
+
+# %%
+for component in mixture.components:
+    inv, log_abs_det = component.inverse(X[0:5])
+    print(log_abs_det, component.base_dist.log_prob(inv))
+
+# %%
+
+# %%
+
 # %%
 x = np.linspace(-20, 20, 1000)
 z = np.array(np.meshgrid(x, x)).transpose(1, 2, 0)
@@ -373,3 +408,8 @@ plt.tight_layout(h_pad=1)
 plt.show()
 
 # %%
+
+# %%
+for component in mixture.components:
+    z, log_abs_det_jac = component.inverse(torch.ones(2, 2))
+    print(log_abs_det_jac, component.base_dist.log_prob(z))
