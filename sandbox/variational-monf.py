@@ -22,7 +22,7 @@ from tqdm import trange
 from tensorboardX import SummaryWriter
 
 from normalizing_flows import NormalizingFlow
-from normalizing_flows.flows import PReLUFlow, AffineLUFlow, BatchNormFlow
+from normalizing_flows.flows import PReLUFlow, StructuredAffineFlow, AffineLUFlow, BatchNormFlow
 
 # %%
 from thesis_utils import now_str, count_parameters, figure2tensor, torch_onehot
@@ -178,32 +178,40 @@ class VariationalMixture(nn.Module):
 
                 loss.backward()
                 
-                #if n_iter % 1000:
-                #    with torch.no_grad():
-                #        densities = mixture.forward(torch.Tensor(z)).numpy()
-                #        f = plt.figure(figsize=(10, 10))
-                #        zz = np.argmax(densities, axis=1).reshape([1000, 1000])
+                if n_iter % 100 == 0:
+                    with torch.no_grad():
+                        densities = mixture.forward(torch.Tensor(z)).numpy()
+                        f = plt.figure(figsize=(10, 10))
+                        zz = np.argmax(densities, axis=1).reshape([1000, 1000])
 
-                #        plt.contourf(xx, yy, zz, 50, cmap="rainbow")
+                        plt.contourf(xx, yy, zz, 50, cmap="rainbow")
 
-                #        colors = ["yellow", "green", "black"]
-                #        with torch.no_grad():
-                #            for i, component in enumerate(mixture.components):
-                #                X_k = component.sample(500)
+                        colors = ["yellow", "green", "black", "cyan"]
+                        with torch.no_grad():
+                            for i, component in enumerate(mixture.components):
+                                X_k = component.sample(500)
 
-                #                plt.scatter(X_k[:, 0].numpy(), X_k[:, 1].numpy(), c=colors[i],
-                #                    s=5)
+                                plt.scatter(X_k[:, 0].numpy(), X_k[:, 1].numpy(), c=colors[i],
+                                    s=5)
 
-                #        plt.xlim(-1.1, 1.1)
-                #        plt.ylim(-1.1, 1.1)
-                #        writer.add_image("distributions", figure2tensor(f), n_iter)
-                #        plt.close(f)
+                        plt.xlim(-1.1, 1.1)
+                        plt.ylim(-1.1, 1.1)
+                        writer.add_image("distributions", figure2tensor(f), n_iter)
+                        plt.close(f)
 
 
                 #if clip_grad is not None:
                 #    torch.nn.utils.clip_grad_norm_(self.parameters(), clip_grad)
 
                 opt.step()
+                #if n_iter == 2500:
+                    #print("changing learning rates")
+                    #for param_group in opt.param_groups:
+                        #if param_group["label"] == "remaining":
+                         #   param_group["lr"] = 6e-2
+                        
+                        #if param_group["label"] == "encoder":
+                        #    param_group["lr"] = 1e-3
 
         return best_loss, best_params
 
@@ -221,6 +229,8 @@ plt.show()
 def make_nf(n_blocks, base_dist):
     blocks = []
     for _ in range(n_blocks):
+  #      blocks += [StructuredAffineFlow(2), PReLUFlow(2), BatchNormFlow(2)]
+  #  blocks += [StructuredAffineFlow(2)]
         blocks += [AffineLUFlow(2), PReLUFlow(2), BatchNormFlow(2)]
     blocks += [AffineLUFlow(2)]
 
@@ -233,7 +243,7 @@ def make_nf(n_blocks, base_dist):
 # %%
 xdim = 2
 hdim = 3
-n_hidden = 3
+n_hidden = 6
 n_classes = 3
 n_flow_blocks = 5
 
@@ -242,7 +252,7 @@ mixture = VariationalMixture(
     hdim=hdim,
     n_hidden=n_hidden,
     n_classes=n_classes,
-    components=[make_nf(5, distrib.Normal(loc=torch.zeros(2), scale=torch.ones(2)))
+    components=[make_nf(n_flow_blocks, distrib.Normal(loc=torch.zeros(2), scale=torch.ones(2)))
                 for _ in range(n_classes)],
 )
 
@@ -256,10 +266,12 @@ count_parameters(mixture)
 # %%
 opt = optim.Adam([
     {   #encoder params
+        "label": "encoder",
         "params": (v for k,v in mixture.named_parameters() if "encoder" in k),
-        "lr": 1e-4
+        "lr": 1e-2
     },
     {   #remaining params
+        "label": "remaining",
         "params": (v for k,v in mixture.named_parameters() if "encoder" not in k),
         "lr": 1e-2
     },
@@ -279,7 +291,7 @@ def train(n_epochs, bs, mixture):
         opt=opt,
         #temperature_schedule=lambda t: np.exp(-5e-4 * t),
         temperature_schedule=lambda t: 1,
-        clip_grad=1e3,
+        clip_grad=1e6,
         verbose=True,
         writer=writer)
 
@@ -289,7 +301,7 @@ def train(n_epochs, bs, mixture):
 # %%
 best_loss, best_params = train(
     n_epochs=1000,
-    bs=64,
+    bs=512,
     mixture=mixture
 )
 
@@ -360,29 +372,6 @@ with torch.no_grad():
 
 plt.show()
 
-
-# %%
-def inverse(self, x):
-    log_abs_det = []
-    z_cur = x
-    for flow in reversed(self):
-        z_prev = flow.inverse(z_cur)
-        log_abs_det.append(- flow.log_abs_det_jacobian(z_prev, z_cur))
-        z_cur = z_prev
-
-    return log_abs_det
-
-
-
-# %%
-for component in mixture.components:
-    inv, log_abs_det = component.inverse(X[0:5])
-    print(log_abs_det, component.base_dist.log_prob(inv))
-
-# %%
-
-# %%
-
 # %%
 x = np.linspace(-20, 20, 1000)
 z = np.array(np.meshgrid(x, x)).transpose(1, 2, 0)
@@ -408,8 +397,3 @@ plt.tight_layout(h_pad=1)
 plt.show()
 
 # %%
-
-# %%
-for component in mixture.components:
-    z, log_abs_det_jac = component.inverse(torch.ones(2, 2))
-    print(log_abs_det_jac, component.base_dist.log_prob(z))
