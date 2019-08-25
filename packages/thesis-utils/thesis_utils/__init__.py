@@ -2,6 +2,9 @@ import datetime
 import torch
 
 from .mpl2tensor import figure2tensor
+from .radam import RAdam
+from .lookahead import Lookahead
+from .ranger import Ranger
 
 now_str = lambda : str(datetime.datetime.now()).replace(" ", "__")
 
