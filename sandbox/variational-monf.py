@@ -23,6 +23,7 @@ from tensorboardX import SummaryWriter
 
 from normalizing_flows import NormalizingFlow
 from normalizing_flows.flows import PReLUFlow, StructuredAffineFlow, AffineLUFlow, BatchNormFlow
+from normalizing_flows.models import RealNVP
 
 # %%
 from thesis_utils import now_str, count_parameters, figure2tensor, torch_onehot
@@ -132,9 +133,9 @@ class VariationalMixture(nn.Module):
         for k in range(self.n_components):
             log_probs = log_probs + q[:, k] * self.components[k].log_prob(x)
 
-        log_probs = log_probs.sum()
-        prior_crossent = (q * self.log_prior).sum(dim=1).sum()
-        q_entropy = - (q * (q + 1e-6).log()).sum(dim=1).sum()
+        log_probs = log_probs.mean()
+        prior_crossent = (q * self.log_prior).sum(dim=1).mean()
+        q_entropy = - (q * (q + 1e-6).log()).sum(dim=1).mean()
 
         return log_probs, prior_crossent, q_entropy
 
@@ -216,7 +217,7 @@ class VariationalMixture(nn.Module):
         return best_loss, best_params
 
 # %%
-X, C = make_pinwheel_data(0.3, 0.05, 3, 512, 0.25)
+X, C = make_pinwheel_data(0.3, 0.05, 3, 2048, 0.25)
 X = torch.Tensor(X)
 C = torch.Tensor(C)
 
@@ -229,10 +230,10 @@ plt.show()
 def make_nf(n_blocks, base_dist):
     blocks = []
     for _ in range(n_blocks):
-  #      blocks += [StructuredAffineFlow(2), PReLUFlow(2), BatchNormFlow(2)]
-  #  blocks += [StructuredAffineFlow(2)]
-        blocks += [AffineLUFlow(2), PReLUFlow(2), BatchNormFlow(2)]
-    blocks += [AffineLUFlow(2)]
+        blocks += [StructuredAffineFlow(2), PReLUFlow(2), BatchNormFlow(2)]
+    blocks += [StructuredAffineFlow(2)]
+  #      blocks += [AffineLUFlow(2), PReLUFlow(2), BatchNormFlow(2)]
+  #  blocks += [AffineLUFlow(2)]
 
     return NormalizingFlow( 
         *blocks,
@@ -241,9 +242,20 @@ def make_nf(n_blocks, base_dist):
 
 
 # %%
+def make_real_nvp(base_dist):
+    return RealNVP(
+        n_blocks=4,
+        input_size=2,
+        hidden_size=2,
+        n_hidden=1,
+        base_dist=base_dist
+    )
+
+
+# %%
 xdim = 2
 hdim = 3
-n_hidden = 6
+n_hidden = 3
 n_classes = 3
 n_flow_blocks = 5
 
@@ -252,8 +264,9 @@ mixture = VariationalMixture(
     hdim=hdim,
     n_hidden=n_hidden,
     n_classes=n_classes,
-    components=[make_nf(n_flow_blocks, distrib.Normal(loc=torch.zeros(2), scale=torch.ones(2)))
-                for _ in range(n_classes)],
+    #components=[make_nf(n_flow_blocks, distrib.Normal(loc=torch.zeros(2), scale=torch.ones(2)))
+    components=[make_real_nvp(distrib.Normal(loc=torch.zeros(2), scale=torch.ones(2)))
+        for _ in range(n_classes)],
 )
 
 # %%
@@ -291,7 +304,7 @@ def train(n_epochs, bs, mixture):
         opt=opt,
         #temperature_schedule=lambda t: np.exp(-5e-4 * t),
         temperature_schedule=lambda t: 1,
-        clip_grad=1e6,
+        #clip_grad=1e6,
         verbose=True,
         writer=writer)
 
@@ -301,7 +314,7 @@ def train(n_epochs, bs, mixture):
 # %%
 best_loss, best_params = train(
     n_epochs=1000,
-    bs=512,
+    bs=256,
     mixture=mixture
 )
 

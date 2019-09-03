@@ -1,4 +1,5 @@
 # %%
+import os
 import random
 import pickle
 import itertools
@@ -29,7 +30,7 @@ from normalizing_flows.flows import PReLUFlow, StructuredAffineFlow, AffineLUFlo
 
 # %%
 from thesis_utils import now_str, count_parameters, figure2tensor, torch_onehot
-from thesis_utils import RAdam, Lookahead, Ranger
+from thesis_utils.extract_images import save_images_from_event
 
 # %%
 import io
@@ -247,29 +248,46 @@ def sample_one_of_each(*iterables):
 xdim = 2
 n_classes = 3
 
-epochs = [100, 500, 1000, 5000]
-batch_sizes = [64, 128, 256, 512]
-n_hidden_encoder = [2, 3, 4, 5]
-hdim_encoder = [2, 3, 4, 5]
-lr_encoder = [1e-4, 1e-3, 1e-2]
-lr_remaining = [1e-4, 1e-3, 1e-2]
-n_flow_blocks = [5, 6, 7, 8]
+#epochs = [100, 500, 1000, 5000]
+#batch_sizes = [64, 128, 256, 512]
+#n_hidden_encoder = [2, 3, 4, 5]
+#hdim_encoder = [2, 3, 4, 5]
+#lr_encoder = [1e-4, 1e-3, 1e-2]
+#lr_remaining = [1e-4, 1e-3, 1e-2]
+#n_flow_blocks = [5, 6, 7, 8]
+
+epochs = [500]
+batch_sizes = [512]
+n_hidden_encoder = [3]
+hdim_encoder = [3]
+lr_encoder = [1e-2]
+lr_remaining = [1e-2]
+n_flow_blocks = [5]
+
+
 #affine_classes = [StructuredAffineFlow, AffineLUFlow]
 affine_class = StructuredAffineFlow
 
-combos = list(itertools.product)
-
 seen = set()
 
-for i in trange(50):
-     combo = sample_one_of_each(
+combo_str = lambda combo: "__"+"_".join(str(c) for c in combo)+"__"
+
+for i in trange(1):
+    combo = sample_one_of_each(
         epochs, batch_sizes, n_hidden_encoder,
         hdim_encoder, lr_encoder, lr_remaining,
         n_flow_blocks
     )
 
-    if combo in seen:
-        continue
+    while combo in seen:
+        combo = sample_one_of_each(
+            epochs, batch_sizes, n_hidden_encoder,
+            hdim_encoder, lr_encoder, lr_remaining,
+            n_flow_blocks
+        )
+    seen.add(combo)
+
+    print(f"Current combo: {combo}")
 
     (n_epochs, bs, n_hidden, hdim, lr_enc, lr_rem, n_blocks) = combo
 
@@ -300,7 +318,7 @@ for i in trange(50):
     ])
 
     opt.zero_grad()
-    writer = SummaryWriter(f"./pinwheel_tests/tensorboard_logs/{str(combo)}")
+    writer = SummaryWriter(f"./pinwheel_tests/tensorboard_logs/{combo_str(combo)}")
 
     best_loss, best_params = mixture.fit(X,
         dataloader=DataLoader(X, batch_size=bs, shuffle=True, num_workers=0),
@@ -308,8 +326,17 @@ for i in trange(50):
         opt=opt,
         temperature_schedule=lambda t: 1,
         clip_grad=1e6,
-        verbose=False,
+        verbose=True,
         writer=writer)
 
-    with open(f"./pinwheel_tests/params/{str(combo)}.pickle") as f:
+    fn = writer.file_writer.event_writer._ev_writer._file_name
+    writer.close()
+
+    with open(f"./pinwheel_tests/params/{combo_str(combo)}.pickle", "wb") as f:
         pickle.dump((best_params, combo), f)
+
+    outdir = f"./pinwheel_tests/images/{combo_str(combo)}/"
+    os.mkdir(outdir)
+    save_images_from_event("./"+fn, "distributions", outdir)
+
+

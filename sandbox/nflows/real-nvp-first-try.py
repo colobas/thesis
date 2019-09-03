@@ -7,6 +7,7 @@ import torch
 import torch.nn as nn
 import torch.distributions as distrib
 import torch.optim as optim
+from torch.utils.data import DataLoader
 
 torch.manual_seed(0)
 torch.backends.cudnn.deterministic = True
@@ -37,8 +38,9 @@ def gen_samples(batch_size=512):
 
     x1_samples = x1.sample()
     return torch.stack([x1_samples, x2_samples]).t()
-
-X = gen_samples(512)
+    
+    
+X = gen_samples(2048)
 
 # %%
 plt.scatter(X[:, 0], X[:, 1], s=5)
@@ -67,32 +69,32 @@ plt.scatter(X0[:, 0], X0[:, 1], s=5, c=colors)
 
 # %%
 flow = RealNVP(
-    n_blocks=2,
+    n_blocks=4,
     input_size=2,
-    hidden_size=2,
-    n_hidden=2,
+    hidden_size=3,
+    n_hidden=1,
     base_dist=base_dist
 )
 
-opt = optim.Adam(flow.parameters(), lr=1e-4)
+opt = optim.Adam(flow.parameters(), lr=1e-2)
 
 # %%
 count_parameters(flow)
 
 # %%
-n_epochs = 100000
-bs = 512
+n_epochs = 200
+bs = 128
 
 # %%
-writer = SummaryWriter(f"./tensorboard_logs/{now_str()}")
-
+writer = SummaryWriter(f"../tensorboard_logs/{now_str()}")
+dataloader = DataLoader(X, batch_size=bs, shuffle=True, num_workers=0)
 best_loss = torch.Tensor([float("+inf")])
 
 #attempts = 0
 
 for epoch in trange(n_epochs):
     batches = range((len(X) - 1) // bs + 1)
-    for i in batches:
+    for i, xb in enumerate(dataloader):
         start_i = i * bs
         end_i = start_i + bs
         xb = X[start_i:end_i]
@@ -100,6 +102,14 @@ for epoch in trange(n_epochs):
 
         opt.zero_grad()
         loss = -flow.log_prob(xb).mean()
+        
+        #z, log_abs_det_jacobian = flow.inverse(xb)
+        #base_log_probs = flow.base_dist.log_prob(z)
+        
+        #base_log_probs_ = -base_log_probs.mean()
+        #log_abs_det_jacob_ = -log_abs_det_jacobian.mean()
+        
+        #loss = (base_log_probs_ + log_abs_det_jacob_)
 
         #if loss <= 0:
         #    if attempts < 100:
@@ -116,19 +126,32 @@ for epoch in trange(n_epochs):
         loss.backward()
         opt.step()
         
-    if epoch % 5 == 0:
-        writer.add_scalar("loss", loss, it)
-    if epoch % 200 == 0:
-        with torch.no_grad():
-            Xhat = flow.sample(1000)
-            f = plt.figure(figsize=(10, 10))
-            plt.xlim(-30, 30)
-            plt.ylim(-20, 20)
-            plt.title(f"{it} iterations")
-            plt.scatter(Xhat[:, 0], Xhat[:, 1], s=5, c="red", alpha=0.5)
-            plt.scatter(X[:, 0], X[:, 1], s=5, c="blue", alpha=0.5)
-            writer.add_image("distributions", figure2tensor(f), it)
-            plt.close(f)
+        if it % 2 == 0:
+            writer.add_scalar("debug/loss", loss, it)
+            #writer.add_scalar("debug/log_probs", base_log_probs_, it)
+            #writer.add_scalar("debug/log_abs_det_jacobian", log_abs_det_jacob_, it)
+        if it % 5 == 0:
+            with torch.no_grad():
+                Xhat = flow.sample(1000)
+                f = plt.figure(figsize=(10, 10))
+                plt.xlim(-30, 30)
+                plt.ylim(-20, 20)
+                plt.title(f"{it} iterations")
+                plt.scatter(X[:, 0], X[:, 1], s=5, c="blue", alpha=0.5)
+                plt.scatter(Xhat[:, 0], Xhat[:, 1], s=5, c="red", alpha=0.5)
+                writer.add_image("debug/samples", figure2tensor(f), it)
+                plt.close(f)
+
+                f = plt.figure(figsize=(10, 10))
+                plt.title(f"{it} iterations")
+                plt.xlim(-5, 5)
+                plt.ylim(-5, 5)
+                z = flow.base_dist.sample((1000,))
+                zhat, _ = flow.inverse(X)
+                plt.scatter(z[:, 0], z[:, 1], s=5, c="blue", alpha=0.5)
+                plt.scatter(zhat[:, 0], zhat[:, 1], s=5, c="red", alpha=0.5)
+                writer.add_image("debug/base_dist", figure2tensor(f), it)
+                plt.close(f)
 
 # %%
 loss
@@ -138,6 +161,18 @@ flow.eval()
 xhat_samples = flow.sample(1000)
 plt.scatter(xhat_samples[:, 0], xhat_samples[:, 1], s=5, c="red")
 plt.scatter(X[:, 0], X[:, 1], s=5, c="blue")
+#plt.xlim(0, 60)
+#plt.ylim(-15, 15)
+plt.show()
+
+# %%
+x2 = flow.net[-2].x2_mask(X)
+
+# %%
+with torch.no_grad():
+    zhat, _ = flow.inverse(X)
+
+plt.scatter(zhat[:, 0], zhat[:, 1], s=5, c="red")
 #plt.xlim(0, 60)
 #plt.ylim(-15, 15)
 plt.show()
@@ -255,5 +290,14 @@ lp.sum(dim=1)
 
 # %%
 flow.log_prob(X).mean()
+
+# %%
+from sklearn import datasets
+
+# %%
+train_data = datasets.make_moons(n_samples=50000, noise=.05)[0].astype(np.float32)
+
+# %%
+train_data.shape
 
 # %%

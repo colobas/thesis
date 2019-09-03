@@ -23,7 +23,7 @@ from tensorboardX import SummaryWriter
 
 # %%
 from normalizing_flows import NormalizingFlow
-from normalizing_flows.flows import PReLUFlow, AffineLUFlow, BatchNormFlow
+from normalizing_flows.flows import PReLUFlow, AffineLUFlow, BatchNormFlow, StructuredAffineFlow
 
 # %%
 from thesis_utils import now_str, count_parameters, figure2tensor
@@ -74,9 +74,14 @@ f1 = AffineLUFlow(2)
 f1.forward(X)
 
 # %%
+#blocks = sum(
+#    [[AffineLUFlow(2), PReLUFlow(2), BatchNormFlow(2)] for _ in range(5)] + 
+#    [[AffineLUFlow(2)]],
+#[])
+
 blocks = sum(
-    [[AffineLUFlow(2), PReLUFlow(2), BatchNormFlow(2)] for _ in range(5)] + 
-    [[AffineLUFlow(2)]],
+    [[StructuredAffineFlow(2), PReLUFlow(2), BatchNormFlow(2)] for _ in range(5)] + 
+    [[StructuredAffineFlow(2)]],
 [])
 
 flow = NormalizingFlow( 
@@ -91,7 +96,7 @@ count_parameters(flow)
 
 # %%
 n_epochs = 2000
-bs = 64
+bs = 512
 clip_grad = 1e6
 
 # %%
@@ -212,6 +217,33 @@ z = np.reshape(z, [z.shape[0] * z.shape[1], -1])
 
 with torch.no_grad():
     densities = flow.log_prob(torch.Tensor(z)).exp().numpy()
+
+mesh = z.reshape([1000, 1000, 2]).transpose(2, 0, 1)
+xx = mesh[0]
+yy = mesh[1]
+
+plt.figure(figsize=(10, 10))
+
+zz = densities.reshape([1000, 1000])
+cb = plt.contourf(xx, yy, zz, 50, cmap="rainbow")
+
+plt.colorbar(cb)
+plt.tight_layout(h_pad=1)
+plt.show()
+
+# %%
+flow2 = NormalizingFlow( 
+    flow[3],
+    base_dist=base_dist,
+)
+
+# %%
+x = np.linspace(-5, 5, 1000)
+z = np.array(np.meshgrid(x, x)).transpose(1, 2, 0)
+z = np.reshape(z, [z.shape[0] * z.shape[1], -1])
+
+with torch.no_grad():
+    densities = flow2.log_prob(torch.Tensor(z)).exp().numpy()
 
 mesh = z.reshape([1000, 1000, 2]).transpose(2, 0, 1)
 xx = mesh[0]

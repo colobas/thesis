@@ -29,8 +29,8 @@ from thesis_utils import now_str, count_parameters, figure2tensor
 
 # %%
 (x_train, y_train), (x_test, y_test) = tf.keras.datasets.mnist.load_data()
-x_train = x_train.reshape(60000, 784)
-x_test = x_test.reshape(10000, 784)
+x_train = x_train.view(60000, 784)
+x_test = x_test.view(10000, 784)
 x_train = x_train.astype('float32')
 x_test = x_test.astype('float32')
 x_train /= 255
@@ -44,7 +44,7 @@ base_dist = distrib.Normal(loc=torch.zeros(X.shape[1]),
 
 # %%
 flow = RealNVP(
-    n_blocks=5,
+    n_blocks=10,
     input_size=X.shape[1],
     hidden_size=X.shape[1]//4,
     n_hidden=3,
@@ -92,19 +92,19 @@ for epoch in trange(n_epochs):
 
         loss.backward()
         opt.step()
-        
-    if epoch % 5 == 0:
-        writer.add_scalar("loss", loss, it)
-    if epoch % 200 == 0:
-        with torch.no_grad():
-            Xhat = flow.sample(1000)
-            f = plt.figure(figsize=(10, 10))
-            plt.xlim(-30, 30)
-            plt.ylim(-20, 20)
-            plt.title(f"{it} iterations")
-            plt.scatter(Xhat[:, 0], Xhat[:, 1], s=5, c="red", alpha=0.5)
-            plt.scatter(X[:, 0], X[:, 1], s=5, c="blue", alpha=0.5)
-            writer.add_image("distributions", figure2tensor(f), it)
-            plt.close(f)
+
+        if epoch % 5 == 0:
+            writer.add_scalar("loss", loss, it)
+        if epoch % 200 == 0:
+            with torch.no_grad():
+                Xhat = flow.sample(1000)
+                f = plt.figure(figsize=(10, 10))
+                plt.xlim(-30, 30)
+                plt.ylim(-20, 20)
+                plt.title(f"{it} iterations")
+                plt.scatter(Xhat[:, 0], Xhat[:, 1], s=5, c="red", alpha=0.5)
+                plt.scatter(X[:, 0], X[:, 1], s=5, c="blue", alpha=0.5)
+                writer.add_image("distributions", figure2tensor(f), it)
+                plt.close(f)
 
 # %%
