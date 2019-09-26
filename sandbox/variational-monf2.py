@@ -60,17 +60,6 @@ def make_pinwheel_data(radial_std, tangential_std, num_classes, num_per_class, r
 
 
 # %%
-def module_grad_health(module):
-    flat = torch.cat([param.grad.abs().flatten()
-                      for param in module.parameters()])
-    return (
-        flat.median(),
-        flat.max(),
-        flat.min()
-    )
-
-
-# %%
 x = np.linspace(-1, 1, 1000)
 z = np.array(np.meshgrid(x, x)).transpose(1, 2, 0)
 z = np.reshape(z, [z.shape[0] * z.shape[1], -1])
@@ -172,14 +161,15 @@ class VariationalMixture(nn.Module):
 
                 # if we're writing to tensorboard
                 if writer is not None:
-                    if n_iter % 20 == 0:
+                    if n_iter % 5 == 0:
                         writer.add_scalar('losses/log_probs', log_probs, n_iter)
-                        #writer.add_scalar('losses/prior_crossent', prior_crossent, n_iter)
+                        writer.add_scalar('losses/prior_crossent', prior_crossent, n_iter)
                         writer.add_scalar('losses/q_entropy', q_entropy, n_iter)
+                        writer.add_scalar('losses/temperature', temperature_schedule(n_iter), n_iter)
 
                 loss.backward()
                 
-                if n_iter % 100 == 0:
+                if n_iter % 20 == 0:
                     with torch.no_grad():
                         densities = mixture.forward(torch.Tensor(z)).numpy()
                         f = plt.figure(figsize=(10, 10))
@@ -217,7 +207,7 @@ class VariationalMixture(nn.Module):
         return best_loss, best_params
 
 # %%
-X, C = make_pinwheel_data(0.3, 0.05, 3, 2048, 0.25)
+X, C = make_pinwheel_data(0.3, 0.05, 3, 4096, 0.25)
 X = torch.Tensor(X)
 C = torch.Tensor(C)
 
@@ -227,13 +217,11 @@ plt.show()
 
 
 # %%
-def make_nf(n_blocks, base_dist):
+def make_nf(n_blocks, base_dist, affine_flow=StructuredAffineFlow):
     blocks = []
     for _ in range(n_blocks):
-        blocks += [StructuredAffineFlow(2), PReLUFlow(2), BatchNormFlow(2)]
-    blocks += [StructuredAffineFlow(2)]
-  #      blocks += [AffineLUFlow(2), PReLUFlow(2), BatchNormFlow(2)]
-  #  blocks += [AffineLUFlow(2)]
+        blocks += [affine_flow(2), PReLUFlow(2), BatchNormFlow(2)]
+    blocks += [affine_flow(2)]
 
     return NormalizingFlow( 
         *blocks,
@@ -246,7 +234,7 @@ def make_real_nvp(base_dist):
     return RealNVP(
         n_blocks=4,
         input_size=2,
-        hidden_size=2,
+        hidden_size=3,
         n_hidden=1,
         base_dist=base_dist
     )
@@ -257,15 +245,15 @@ xdim = 2
 hdim = 3
 n_hidden = 3
 n_classes = 3
-n_flow_blocks = 5
+n_flow_blocks = 8
 
 mixture = VariationalMixture(
     xdim=xdim,
     hdim=hdim,
     n_hidden=n_hidden,
     n_classes=n_classes,
-    #components=[make_nf(n_flow_blocks, distrib.Normal(loc=torch.zeros(2), scale=torch.ones(2)))
-    components=[make_real_nvp(distrib.Normal(loc=torch.zeros(2), scale=torch.ones(2)))
+    components=[make_nf(n_flow_blocks, distrib.Normal(loc=torch.zeros(2), scale=torch.ones(2)))
+    #components=[make_real_nvp(distrib.Normal(loc=torch.zeros(2), scale=torch.ones(2)))
         for _ in range(n_classes)],
 )
 
@@ -300,10 +288,9 @@ def train(n_epochs, bs, mixture):
     best_loss, best_params = mixture.fit(X,
         dataloader=DataLoader(X, batch_size=bs, shuffle=True, num_workers=0),
         n_epochs=n_epochs,
-        #bs=bs,
         opt=opt,
-        #temperature_schedule=lambda t: np.exp(-5e-4 * t),
-        temperature_schedule=lambda t: 1,
+        temperature_schedule=lambda t: np.exp(-1e-3 * t),
+        #temperature_schedule=lambda t: 1,
         #clip_grad=1e6,
         verbose=True,
         writer=writer)
@@ -313,8 +300,8 @@ def train(n_epochs, bs, mixture):
 
 # %%
 best_loss, best_params = train(
-    n_epochs=1000,
-    bs=256,
+    n_epochs=200,
+    bs=512,
     mixture=mixture
 )
 

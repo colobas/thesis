@@ -16,6 +16,7 @@ torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
 
 import matplotlib.pyplot as plt
+import seaborn as sns
 import datetime
 
 from tqdm import trange
@@ -30,8 +31,12 @@ from thesis_utils import now_str, count_parameters, figure2tensor, torch_onehot
 from thesis_utils import RAdam, Lookahead, Ranger
 
 # %%
-import io
-from bad_grad_viz import register_hooks
+#import io
+#from bad_grad_viz import register_hooks
+
+# %%
+colors = sns.color_palette("bright", 8)
+sns.palplot(colors)
 
 
 # %%
@@ -187,12 +192,11 @@ class VariationalMixture(nn.Module):
 
                         plt.contourf(xx, yy, zz, 50, cmap="rainbow")
 
-                        colors = ["yellow", "green", "black", "cyan"]
                         with torch.no_grad():
                             for i, component in enumerate(mixture.components):
                                 X_k = component.sample(500)
 
-                                plt.scatter(X_k[:, 0].numpy(), X_k[:, 1].numpy(), c=colors[i],
+                                plt.scatter(X_k[:, 0].numpy(), X_k[:, 1].numpy(), c=[colors[i]],
                                     s=5)
 
                         plt.xlim(-1.1, 1.1)
@@ -217,7 +221,7 @@ class VariationalMixture(nn.Module):
         return best_loss, best_params
 
 # %%
-X, C = make_pinwheel_data(0.3, 0.05, 3, 2048, 0.25)
+X, C = make_pinwheel_data(0.3, 0.05, 5, 1024, 0.25)
 X = torch.Tensor(X)
 C = torch.Tensor(C)
 
@@ -254,10 +258,10 @@ def make_real_nvp(base_dist):
 
 # %%
 xdim = 2
-hdim = 3
+hdim = 5
 n_hidden = 3
-n_classes = 3
-n_flow_blocks = 5
+n_classes = 5
+n_flow_blocks = 7
 
 mixture = VariationalMixture(
     xdim=xdim,
