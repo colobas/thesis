@@ -5,6 +5,7 @@ from .mpl2tensor import figure2tensor
 from .radam import RAdam
 from .lookahead import Lookahead
 from .ranger import Ranger
+from .make_datasets import make_pinwheel_data, make_circles_data
 
 now_str = lambda : str(datetime.datetime.now()).replace(" ", "__")
 
