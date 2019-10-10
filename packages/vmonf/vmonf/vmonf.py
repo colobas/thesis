@@ -132,7 +132,7 @@ class VariationalMixture(nn.Module):
 
                 if post_backward_callback is not None:
                     with torch.no_grad():
-                        post_backward_callback(self, n_iter, log_probs, prior_crossent, q_entropy, temperature)
+                        post_backward_callback(self, n_iter, temperature, best_params, best_loss)
 
                 opt.step()
 
