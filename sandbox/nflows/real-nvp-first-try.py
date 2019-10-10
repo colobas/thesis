@@ -40,7 +40,7 @@ def gen_samples(batch_size=512):
     return torch.stack([x1_samples, x2_samples]).t()
     
     
-X = gen_samples(4096)
+X = gen_samples(1024)
 
 # %%
 plt.scatter(X[:, 0], X[:, 1], s=5)

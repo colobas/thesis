@@ -32,12 +32,20 @@ from thesis_utils import now_str, count_parameters, figure2tensor
 
 
 # %%
-def gen_samples(n_samples=512):
-    all_X, y = make_circles(n_samples=n_samples)
+def gen_samples(n_samples=512, r=0.8, eps=0.05):
+    #all_X, y = make_circles(n_samples=n_samples)
     
-    return torch.tensor(all_X[y == 0]).float()
+    rs = np.random.randn(n_samples) * eps + r
+    thetas = np.random.rand(n_samples) * 2 * np.pi
+    
+    x = rs * np.cos(thetas)
+    y = rs * np.sin(thetas)
+    
+    X = np.vstack((x, y)).T
+    
+    return torch.tensor(X).float()
 
-X = gen_samples(4096)
+X = gen_samples(4096)#, eps=0.0001)
 
 # %%
 plt.scatter(X[:, 0], X[:, 1], s=5)
@@ -68,7 +76,7 @@ plt.scatter(X0[:, 0], X0[:, 1], s=5, c=colors)
 flow = RealNVP(
     n_blocks=4,
     input_size=2,
-    hidden_size=3,
+    hidden_size=32,
     n_hidden=1,
     base_dist=base_dist
 )
@@ -157,7 +165,7 @@ loss
 flow.eval()
 xhat_samples = flow.sample(1000)
 plt.scatter(xhat_samples[:, 0], xhat_samples[:, 1], s=5, c="red")
-plt.scatter(X[:, 0], X[:, 1], s=5, c="blue")
+#plt.scatter(X[:, 0], X[:, 1], s=5, c="blue")
 #plt.xlim(0, 60)
 #plt.ylim(-15, 15)
 plt.show()
