@@ -15,7 +15,7 @@ import torch.distributions as distrib
 import torch.optim as optim
 import torch.nn.functional as F
 
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, TensorDataset
 
 torch.manual_seed(0)
 torch.backends.cudnn.deterministic = True
@@ -49,7 +49,7 @@ colors = sns.color_palette("bright", 8)
 sns.palplot(colors)
 
 # %%
-DATASET = "PINWHEEL"
+DATASET = "CIRCLES"
 
 # %%
 if DATASET == "PINWHEEL":
@@ -57,6 +57,10 @@ if DATASET == "PINWHEEL":
     X = torch.Tensor(X)
     C = torch.Tensor(C)
 
+    X_pt, C_pt = make_pinwheel_data(0.3, 0.05, 5, 32, 0.4)
+    X_pt = torch.Tensor(X_pt)
+    C_pt = torch.Tensor(C_pt)
+    
     plt.figure(figsize=(10, 10))
     plt.scatter(X[:,0].numpy(), X[:,1].numpy(), c=C.numpy(), s=5)
     plt.show()
@@ -64,6 +68,10 @@ elif DATASET == "CIRCLES":
     X, C = make_circles_data(0.8, 0.4, n_samples=4096)
     X = torch.Tensor(X)
     C = torch.Tensor(C)
+    
+    X_pt, C_pt = make_circles_data(0.8, 0.4, n_samples=32)
+    X_pt = torch.Tensor(X_pt)
+    C_pt = torch.Tensor(C_pt)
 
     plt.figure(figsize=(10, 10))
     plt.scatter(X[:,0].numpy(), X[:,1].numpy(), c=C.numpy(), s=5)
@@ -76,11 +84,11 @@ base_dist = distrib.Normal(loc=torch.zeros(2), scale=torch.ones(2))
 
 xdim = 2
 hdim = 16
-n_hidden = 1
-n_classes = 5
+n_hidden = 2
+n_classes = 2
 n_realnvp_blocks = 4
-hdim_realnvp = 16
-n_hidden_realnvp = 1
+hdim_realnvp = 8
+n_hidden_realnvp = 2
 
 mixture = VariationalMixture(
     xdim=xdim,
@@ -120,7 +128,7 @@ def _pre_backward_callback(mixture, n_iter, log_probs, prior_crossent, q_entropy
 
 def _post_backward_callback(mixture, n_iter, log_probs, prior_crossent, q_entropy, temperature, writer):
     if n_iter % 100 == 0:
-        densities = mixture.forward(torch.Tensor(z)).numpy()
+        densities = mixture.forward(torch.Tensor(z), temperature).numpy()
         f = plt.figure(figsize=(10, 10))
         zz = np.argmax(densities, axis=1).reshape([1000, 1000])
 
@@ -142,15 +150,33 @@ def _post_backward_callback(mixture, n_iter, log_probs, prior_crossent, q_entrop
 
 
 # %%
+#n_epochs = 50
+#bs = 16
+#lr = 1e-3
+
+#opt = optim.Adam(mixture.parameters(), lr=lr)
+#opt.zero_grad()
+
+#mixture.pretrain(
+#    DataLoader(TensorDataset(X_pt, torch_onehot(C_pt, 2)), batch_size=bs, shuffle=True, num_workers=0),
+#    n_epochs,
+#    opt,
+#    verbose=True
+#)
+
+# %%
 n_epochs = 500
 bs = 128
 lr = 1e-3
 
+
 writer = SummaryWriter(
     f"./tensorboard_logs/{DATASET}_{n_epochs}epochs_{bs}bs_{lr}lr"
     f"_{hdim}hdim_{hdim_realnvp}hdim_realnvp"
+    f"_SS_"
     f"_{now_str()[:-7]}"
 )
+
 
 opt = optim.Adam(mixture.parameters(), lr=lr)
 
@@ -163,7 +189,8 @@ best_loss, best_params = mixture.fit(
         temperature_schedule=lambda t: np.exp(-1e-3 * t),
         verbose=True,
         pre_backward_callback=lambda m, n, l, p, q, t: _pre_backward_callback(m, n, l, p, q, t, writer),
-        post_backward_callback=lambda m, n, l, p, q, t: _post_backward_callback(m, n, l, p, q, t, writer)
+        post_backward_callback=lambda m, n, l, p, q, t: _post_backward_callback(m, n, l, p, q, t, writer),
+        sup_dataloader=DataLoader(TensorDataset(X_pt, torch_onehot(C_pt, 2)), batch_size=bs, shuffle=True, num_workers=0)
 )
 
 # %%
@@ -175,7 +202,7 @@ z = np.array(np.meshgrid(x, x)).transpose(1, 2, 0)
 z = np.reshape(z, [z.shape[0] * z.shape[1], -1])
 
 with torch.no_grad():
-    densities = mixture.forward(torch.Tensor(z), 0.001).numpy()
+    densities = mixture.forward(torch.Tensor(z)).numpy()
 
 mesh = z.reshape([1000, 1000, 2]).transpose(2, 0, 1)
 xx = mesh[0]
@@ -208,7 +235,7 @@ ax.scatter(X[:, 0].numpy(), X[:, 1].numpy(), c=c, s=5)
 plt.show()
 
 # %%
-q = torch_onehot(C, 5)
+q = torch_onehot(C, 3)
 
 # %%
 f, ax = plt.subplots(1, 1, figsize=(10, 10))
@@ -217,15 +244,14 @@ zz = np.argmax(densities, axis=1).reshape([1000, 1000])
 
 ax.contourf(xx, yy, zz, 50, cmap="rainbow")
 
+colors = ["yellow", "green", "black"]
 with torch.no_grad():
     for i, component in enumerate(mixture.components):
         X_k = component.sample(2048)
 
-        ax.scatter(X_k[:, 0].numpy(), X_k[:, 1].numpy(), c=[colors[i]],
+        ax.scatter(X_k[:, 0].numpy(), X_k[:, 1].numpy(), c=colors[i],
             s=5)
 
-plt.xlim(-1.1, 1.1)
-plt.ylim(-1.1, 1.1)
 plt.show()
 
 # %%
