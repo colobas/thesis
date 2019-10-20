@@ -45,8 +45,9 @@ class VariationalMixture(nn.Module):
 
     def update_mixture_weights(self, x):
         num = torch.zeros(len(x), len(components))
+
         for k in range(self.n_components):
-            num[:, k] = (self.n_components[k].log_prob(x) + self.log_prior[k]).exp()
+            num[:, k] = (self.components[k].log_prob(x) + self.log_prior[k]).exp()
 
         num = num / num.sum(dim=1)
 
@@ -57,9 +58,11 @@ class VariationalMixture(nn.Module):
     def loss_terms(self, x, T=1):
         q = self.forward(x, T)
 
-        log_probs = 0
-        for k in range(self.n_components):
-            log_probs = log_probs + q[:, k] * self.components[k].log_prob(x)
+        comp_log_probs = nn.parallel.parallel_apply(x, [lp.log_prob for lp in self.components])
+        log_probs = (q * comp_log_probs).sum(dim=1)
+
+       # for k in range(self.n_components):
+       #     log_probs = log_probs + q[:, k] * self.components[k].log_prob(x)
 
         log_probs = log_probs.mean()
         prior_crossent = (q * self.log_prior).sum(dim=1).mean()
