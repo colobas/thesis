@@ -58,7 +58,10 @@ class VariationalMixture(nn.Module):
     def loss_terms(self, x, T=1):
         q = self.forward(x, T)
 
-        comp_log_probs = nn.parallel.parallel_apply(x, [lp.log_prob for lp in self.components])
+        comp_log_probs = nn.parallel.parallel_apply(
+            (x for _ in range(self.n_components),
+            [lp.log_prob for lp in self.components]
+        )
         log_probs = (q * comp_log_probs).sum(dim=1)
 
        # for k in range(self.n_components):
