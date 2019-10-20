@@ -6,18 +6,20 @@ import torch.optim as optim
 from tqdm import trange
 
 class VariationalMixture(nn.Module):
-    def __init__(self, xdim, hdim, n_hidden, n_classes, components, log_prior=None):
+    def __init__(self, xdim, hdim, n_hidden, n_classes, components, log_prior=None, encoder=None):
         super().__init__()
 
         self.xdim = xdim
 
-        net_modules = (
-          [nn.Linear(xdim, hdim), nn.ReLU(), nn.BatchNorm1d(hdim)] +
-          sum([[nn.Linear(hdim, hdim), nn.ReLU(), nn.BatchNorm1d(hdim)] for i in range(n_hidden)], []) +
-          [nn.Linear(hdim, n_classes)]
-        )
-
-        self.encoder = nn.Sequential(*net_modules)
+        if encoder is None:
+            net_modules = (
+              [nn.Linear(xdim, hdim), nn.ReLU(), nn.BatchNorm1d(hdim)] +
+              sum([[nn.Linear(hdim, hdim), nn.ReLU(), nn.BatchNorm1d(hdim)] for i in range(n_hidden)], []) +
+              [nn.Linear(hdim, n_classes)]
+            )
+            self.encoder = nn.Sequential(*net_modules)
+        else:
+            self.encoder = encoder
 
         self.components = nn.ModuleList(components)
         self.n_components = len(components)
