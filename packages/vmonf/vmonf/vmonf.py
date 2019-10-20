@@ -6,7 +6,7 @@ import torch.optim as optim
 from tqdm import trange
 
 class VariationalMixture(nn.Module):
-    def __init__(self, xdim, hdim, n_hidden, n_classes, components, log_prior=None, encoder=None):
+    def __init__(self, components, log_prior=None, encoder=None, xdim=None, hdim=None, n_hidden=None, n_classes=None):
         super().__init__()
 
         self.xdim = xdim
